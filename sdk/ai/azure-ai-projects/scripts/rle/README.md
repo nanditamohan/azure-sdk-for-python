@@ -14,11 +14,10 @@ python release.py --public-checkout C:\repos\azure-sdk-public --bump minor
 python release.py --public-checkout C:\repos\azure-sdk-public --bump major
 ```
 
-The script verifies the repository, branch, and clean state, refreshes `origin/main`
-for the distribution-only check, then pulls with `--ff-only` and rechecks the
-checkout before building. Branch-only shallow checkouts are supported; history
-is deepened if needed to find the common base. Diverged branches fail;
-the script never switches branches, resets your work, stages files, commits, or pushes.
+The script checks that the public checkout uses the correct repository and branch,
+is clean, and contains only allowed release changes. It refreshes the checkout
+without merging or resetting your work and rechecks it before building. Diverged
+branches fail. The script never switches branches, stages files, commits, or pushes.
 
 Patch is the default. Versioning bumps the highest core version in the SDK or
 registry with a `b1` suffix: `2.7.0b1` becomes `2.7.1b1`, `2.8.0b1`, or `3.0.0b1`.
