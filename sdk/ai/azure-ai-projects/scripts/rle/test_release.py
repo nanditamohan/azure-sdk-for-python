@@ -21,6 +21,22 @@ SECOND_VERSION = "2.7.0b2"
 LEGACY_VERSION = "2.7.0.dev20261012000000"
 
 
+@pytest.fixture(autouse=True)
+def local_public_fetch(monkeypatch):
+    real_git = release.git
+    public_url = f"https://github.com/{release.PUBLIC_REPOSITORY}.git"
+
+    def git(checkout, *arguments):
+        if arguments[0] == "fetch" and real_git(checkout, "remote", "get-url", "origin") == public_url:
+            return real_git(
+                checkout, "-c", f"url.{checkout.resolve().as_uri()}.insteadOf={public_url}",
+                *arguments,
+            )
+        return real_git(checkout, *arguments)
+
+    monkeypatch.setattr(release, "git", git)
+
+
 def wheel_bytes(version=VERSION, *, extra="rle", module=True):
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
@@ -37,7 +53,7 @@ def manifest_for(version=VERSION, data=None):
     data = wheel_bytes(version) if data is None else data
     filename = f"azure_ai_projects-{version}-py3-none-any.whl"
     return {
-        "schema_version": 1, "package": "azure-ai-projects", "channel": "rle-external",
+        "schema_version": 1, "package": "azure-ai-projects", "channel": "rle",
         "latest": version,
         "versions": {version: {
             "filename": filename,
@@ -71,6 +87,33 @@ def test_latest_and_explicit_versions_resolve_independently():
     manifest["latest"] = SECOND_VERSION
     assert release.resolve_release(manifest).version == SECOND_VERSION
     assert release.resolve_release(manifest, VERSION).version == VERSION
+
+
+def test_final_public_registry_contract(tmp_path):
+    manifest = {
+        "schema_version": 1,
+        "package": "azure-ai-projects",
+        "channel": "rle",
+        "latest": "2.7.0b1",
+        "versions": {"2.7.0b1": {
+            "filename": "azure_ai_projects-2.7.0b1-py3-none-any.whl",
+            "url": (
+                "https://raw.githubusercontent.com/Azure/azure-sdk-for-python/"
+                "rle-releases/sdk/ai/azure-ai-projects/rle/wheels/2.7.0b1/"
+                "azure_ai_projects-2.7.0b1-py3-none-any.whl"
+            ),
+            "sha256": "004b027dc2629b834b1b957bc2b1b94f64c4fc0de901d2c90b8a1a21f5669979",
+        }},
+    }
+    assert release.PUBLIC_BRANCH == "rle-releases"
+    assert release.PUBLIC_PATH == "sdk/ai/azure-ai-projects/rle"
+    assert release.resolve_release(manifest).version == "2.7.0b1"
+    assert release.resolve_release(manifest, "2.7.0b1").version == "2.7.0b1"
+    registry = tmp_path / "sdk" / "ai" / "azure-ai-projects" / "rle" / "registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps(manifest))
+    assert release.read_registry(tmp_path) == manifest
+    assert release.next_version(tmp_path, "2.7.0") == "2.7.1b1"
 
 
 @pytest.mark.parametrize("version", ["", "2.7.0", "missing", "../escape", SECOND_VERSION])
@@ -279,6 +322,7 @@ def test_releases_preserve_versions_and_leave_changes_unstaged(tmp_path, first_v
     first_wheel = tmp_path / f"azure_ai_projects-{first_version}-py3-none-any.whl"
     first_wheel.write_bytes(wheel_bytes(first_version))
     first = release.prepare_release(checkout, first_wheel, first_version)
+    assert first["channel"] == "rle"
     previous = first["versions"][first_version].copy()
     assert previous["url"].split("/")[5] == release.PUBLIC_BRANCH
     path = f"{release.PUBLIC_PATH}/wheels/{first_version}/{first_wheel.name}"
@@ -349,7 +393,7 @@ def test_existing_checkout_accepts_standard_public_remotes(tmp_path, remote):
     checkout = tmp_path / "public"
     checkout.mkdir()
     with patch.object(release, "git") as git:
-        git.side_effect = [str(checkout), remote, release.PUBLIC_BRANCH, "", "a" * 40, ""]
+        git.side_effect = [str(checkout), remote, release.PUBLIC_BRANCH, "", "", "a" * 40, ""]
         release.ensure_public_checkout(checkout, tmp_path / "source")
     assert all(call.args[1] not in {"clone", "switch", "reset", "push"} for call in git.call_args_list)
 
@@ -453,11 +497,15 @@ def test_shallow_checkout_deepens_history_to_find_the_pr_base(tmp_path):
     changed = f"{release.PUBLIC_PATH}/registry.json"
     with patch.object(release, "git") as git:
         git.side_effect = [
+            "",
             subprocess.CalledProcessError(1, ["git", "merge-base"]),
             "", "a" * 40, changed,
         ]
         assert release.public_changes(tmp_path) == [changed]
-    assert git.call_args_list[1].args == (
+    assert git.call_args_list[0].args == (
+        tmp_path, "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main",
+    )
+    assert git.call_args_list[2].args == (
         tmp_path, "fetch", "--deepen=50", "origin", "main", release.PUBLIC_BRANCH,
     )
     assert git.call_args_list[-1].args == (
@@ -466,10 +514,36 @@ def test_shallow_checkout_deepens_history_to_find_the_pr_base(tmp_path):
 
 
 def test_pr_base_lookup_does_not_hide_git_errors(tmp_path):
-    with patch.object(release, "git", side_effect=subprocess.CalledProcessError(128, ["git"])) as git:
+    with patch.object(release, "git") as git:
+        git.side_effect = ["", subprocess.CalledProcessError(128, ["git", "merge-base"])]
+        with pytest.raises(subprocess.CalledProcessError):
+            release.public_changes(tmp_path)
+    assert git.call_count == 2
+
+
+def test_main_fetch_failure_stops_public_history_validation(tmp_path):
+    with patch.object(release, "git", side_effect=subprocess.CalledProcessError(128, ["git", "fetch"])) as git:
         with pytest.raises(subprocess.CalledProcessError):
             release.public_changes(tmp_path)
     git.assert_called_once()
+
+
+def test_refreshing_stale_main_accepts_legitimate_public_base_merge(tmp_path):
+    checkout = public_checkout(tmp_path)
+    original_main = release.git(checkout, "rev-parse", "origin/main")
+    release.git(checkout, "switch", "main")
+    (checkout / "baseline.txt").write_text("New upstream SDK source.\n")
+    release.git(checkout, "add", "baseline.txt")
+    release.git(checkout, "commit", "-m", "Advance public main")
+    release.git(checkout, "switch", release.PUBLIC_BRANCH)
+    release.git(checkout, "merge", "--no-edit", "main")
+    original_head = release.git(checkout, "rev-parse", "HEAD")
+    assert release.git(checkout, "rev-parse", "origin/main") == original_main
+    release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert release.git(checkout, "rev-parse", "origin/main") == release.git(checkout, "rev-parse", "main")
+    assert release.public_changes(checkout) == []
+    assert release.git(checkout, "rev-parse", "HEAD") == original_head
+    assert release.git(checkout, "status", "--porcelain") == ""
 
 
 def test_advancing_upstream_main_does_not_count_as_private_pr_changes(tmp_path):
@@ -492,7 +566,8 @@ def test_advancing_upstream_main_does_not_count_as_private_pr_changes(tmp_path):
     }
 
 
-def test_real_shallow_clone_deepens_and_temporary_git_files_are_cleaned_up(tmp_path):
+@pytest.mark.parametrize("existing_main_ref", [False, True])
+def test_real_shallow_clone_deepens_and_temporary_git_files_are_cleaned_up(tmp_path, existing_main_ref):
     upstream = public_checkout(tmp_path)
     registry_path = f"{release.PUBLIC_PATH}/registry.json"
     registry = upstream / registry_path
@@ -507,14 +582,20 @@ def test_real_shallow_clone_deepens_and_temporary_git_files_are_cleaned_up(tmp_p
     with release.tempfile.TemporaryDirectory(dir=tmp_path) as temporary:
         checkout = (Path(temporary) / "public").resolve()
         release.git(
-            tmp_path, "clone", "--depth=1", "--branch", release.PUBLIC_BRANCH,
+            tmp_path, "clone", "--depth=1", "--single-branch", "--branch", release.PUBLIC_BRANCH,
             upstream.as_uri(), str(checkout),
         )
-        release.git(checkout, "fetch", "--depth=1", "origin", "main:refs/remotes/origin/main")
-        with pytest.raises(subprocess.CalledProcessError):
-            release.git(checkout, "merge-base", "origin/main", "HEAD")
+        if existing_main_ref:
+            release.git(checkout, "fetch", "--depth=1", "origin", "main:refs/remotes/origin/main")
+            with pytest.raises(subprocess.CalledProcessError):
+                release.git(checkout, "merge-base", "origin/main", "HEAD")
+        else:
+            assert release.git(checkout, "for-each-ref", "refs/remotes/origin/main") == ""
+        original_head = release.git(checkout, "rev-parse", "HEAD")
         assert release.public_changes(checkout) == [registry_path]
         release.validate_public_paths(release.public_changes(checkout))
+        assert release.git(checkout, "rev-parse", "HEAD") == original_head
+        assert release.git(checkout, "status", "--porcelain") == ""
     assert not Path(temporary).exists()
 
 
@@ -535,9 +616,12 @@ def test_build_stages_version_without_changing_source(tmp_path):
     tooling = package / "scripts"
     tooling.mkdir()
     (tooling / "private-release.py").write_text("private tooling\n")
-    artifacts = package / "rle-releases"
+    artifacts = package / "rle"
     artifacts.mkdir()
     (artifacts / "registry.json").write_text("{}")
+    runtime_module = version_file.parent / "rle" / "environments" / "__init__.py"
+    runtime_module.parent.mkdir(parents=True)
+    runtime_module.write_text("runtime RLE module\n")
     workspace = tmp_path / "build"
     workspace.mkdir()
 
@@ -545,7 +629,8 @@ def test_build_stages_version_without_changing_source(tmp_path):
         staged = workspace / "package"
         assert (staged / version_file.relative_to(package)).read_text() == f'VERSION = "{VERSION}"\n'
         assert not (staged / "scripts").exists()
-        assert not (staged / "rle-releases").exists()
+        assert not (staged / "rle").exists()
+        assert (staged / runtime_module.relative_to(package)).read_text() == "runtime RLE module\n"
         wheels = workspace / "wheels"
         wheels.mkdir()
         (wheels / f"azure_ai_projects-{VERSION}-py3-none-any.whl").write_bytes(wheel_bytes())

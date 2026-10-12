@@ -16,9 +16,9 @@ import tempfile
 import zipfile
 
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
-PUBLIC_BRANCH = "rle-external-releases"
-PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle-releases"
-PUBLIC_PR_URL = f"https://github.com/{PUBLIC_REPOSITORY}/pull/49482"
+PUBLIC_BRANCH = "rle-releases"
+PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle"
+PUBLIC_PR_URL = f"https://github.com/{PUBLIC_REPOSITORY}/pull/49488"
 MANIFEST_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/"
     f"{PUBLIC_BRANCH}/{PUBLIC_PATH}/registry.json"
@@ -42,7 +42,7 @@ def resolve_release(manifest: object, version: str = "latest") -> Release:
     if (
         manifest.get("schema_version") != 1
         or manifest.get("package") != "azure-ai-projects"
-        or manifest.get("channel") != "rle-external"
+        or manifest.get("channel") != "rle"
     ):
         raise ValueError("Unsupported SDK manifest schema, package, or channel.")
     selected = manifest.get("latest") if version == "latest" else version
@@ -148,12 +148,15 @@ def ensure_public_checkout(checkout: Path, source: Path) -> None:
 
 
 def public_changes(checkout: Path) -> list[str]:
+    main_ref = "+refs/heads/main:refs/remotes/origin/main"
+    git(checkout, "fetch", "origin", main_ref)
     for deepen in (50, 200, 1000):
         try:
             git(checkout, "merge-base", "origin/main", "HEAD")
         except subprocess.CalledProcessError as error:
             if error.returncode != 1:
                 raise
+            # An unmapped main ref also fetches its already-current shallow history.
             git(checkout, "fetch", f"--deepen={deepen}", "origin", "main", PUBLIC_BRANCH)
         else:
             break
@@ -173,13 +176,18 @@ def validate_public_paths(paths: list[str]) -> None:
 
 def build_wheel(package: Path, version: str, workspace: Path) -> Path:
     staged = workspace / "package"
-    shutil.copytree(
-        package, staged,
-        ignore=shutil.ignore_patterns(
-            "scripts", "rle-releases", "build", "dist", "*.egg-info",
-            "__pycache__", ".venv", ".env", ".env.*",
-        ),
+    ignore_build_files = shutil.ignore_patterns(
+        "scripts", "build", "dist", "*.egg-info",
+        "__pycache__", ".venv", ".env", ".env.*",
     )
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = ignore_build_files(directory, names)
+        if Path(directory) == package:
+            ignored.add("rle")
+        return ignored
+
+    shutil.copytree(package, staged, ignore=ignore)
     version_file = staged / "azure" / "ai" / "projects" / "_version.py"
     original = version_file.read_text(encoding="utf-8")
     updated, count = re.subn(
@@ -207,7 +215,7 @@ def prepare_release(checkout: Path, wheel: Path, version: str) -> dict:
     if manifest is None:
         manifest = {
             "schema_version": 1, "package": "azure-ai-projects",
-            "channel": "rle-external", "latest": version, "versions": {},
+            "channel": "rle", "latest": version, "versions": {},
         }
     if version in manifest["versions"]:
         raise ValueError(f"SDK {version} is already released; use a new version.")
