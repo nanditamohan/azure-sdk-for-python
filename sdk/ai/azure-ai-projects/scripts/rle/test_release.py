@@ -315,6 +315,7 @@ def test_releases_preserve_versions_and_leave_changes_unstaged(tmp_path, first_v
     f"{release.PUBLIC_PATH}/install_rle_sdk.py",
     f"{release.PUBLIC_PATH}/README.md",
     f"{release.PUBLIC_PATH}/wheels/{VERSION}/secret.txt",
+    "sdk/ai/azure-ai-projects/rle-external/registry.json",
 ])
 def test_private_source_and_unexpected_files_cannot_be_published(path):
     with pytest.raises(ValueError, match="non-distribution"):
@@ -534,6 +535,9 @@ def test_build_stages_version_without_changing_source(tmp_path):
     tooling = package / "scripts"
     tooling.mkdir()
     (tooling / "private-release.py").write_text("private tooling\n")
+    artifacts = package / "rle-releases"
+    artifacts.mkdir()
+    (artifacts / "registry.json").write_text("{}")
     workspace = tmp_path / "build"
     workspace.mkdir()
 
@@ -541,6 +545,7 @@ def test_build_stages_version_without_changing_source(tmp_path):
         staged = workspace / "package"
         assert (staged / version_file.relative_to(package)).read_text() == f'VERSION = "{VERSION}"\n'
         assert not (staged / "scripts").exists()
+        assert not (staged / "rle-releases").exists()
         wheels = workspace / "wheels"
         wheels.mkdir()
         (wheels / f"azure_ai_projects-{VERSION}-py3-none-any.whl").write_bytes(wheel_bytes())

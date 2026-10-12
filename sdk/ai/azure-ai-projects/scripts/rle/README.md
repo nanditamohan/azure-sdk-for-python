@@ -21,6 +21,7 @@ the script never switches branches, resets your work, stages files, commits, or 
 Patch is the default. Versioning bumps the highest core version in the SDK or
 registry with a `b1` suffix: `2.7.0b1` becomes `2.7.1b1`, `2.8.0b1`, or `3.0.0b1`.
 The wheel and registry are left as unstaged changes in the provided checkout.
+Artifacts live under `sdk/ai/azure-ai-projects/rle-releases`.
 New wheel URLs use versioned paths on the public release branch with SHA-256
 validation. Approved versions are preserved and the source SDK version unchanged.
 

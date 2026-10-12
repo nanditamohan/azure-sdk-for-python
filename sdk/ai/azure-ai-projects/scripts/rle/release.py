@@ -17,7 +17,7 @@ import zipfile
 
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
 PUBLIC_BRANCH = "rle-external-releases"
-PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle-external"
+PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle-releases"
 PUBLIC_PR_URL = f"https://github.com/{PUBLIC_REPOSITORY}/pull/49482"
 MANIFEST_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/"
@@ -176,7 +176,7 @@ def build_wheel(package: Path, version: str, workspace: Path) -> Path:
     shutil.copytree(
         package, staged,
         ignore=shutil.ignore_patterns(
-            "scripts", "rle-external", "build", "dist", "*.egg-info",
+            "scripts", "rle-releases", "build", "dist", "*.egg-info",
             "__pycache__", ".venv", ".env", ".env.*",
         ),
     )
