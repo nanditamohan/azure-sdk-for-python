@@ -1,15 +1,17 @@
 # External RLE SDK preview distribution
 
-The public distribution contains only packaged `azure-ai-projects` wheels, this
-documentation, [`install_rle_sdk.py`](./install_rle_sdk.py), and a
-[`registry.json`](./registry.json) manifest. It requires no source repository
+The public distribution contains only packaged `azure-ai-projects` wheels and a
+[`registry.json`](https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-external-releases/sdk/ai/azure-ai-projects/rle-external/registry.json)
+manifest. Release scripts, the installer and this documentation stay in the
+source fork; standalone installer copies also ship in the RLE samples. Reading
+the public manifest and downloading wheels requires no source repository
 access or credentials. Wheels contain Python code: publishing them is public
 distribution of the implementation, not a way to keep shipped code confidential.
 
 ## Install
 
-Download the installer from the maintained `rle-external-releases` branch of
-`Azure/azure-sdk-for-python`, then run:
+Use [`install_rle_sdk.py`](./install_rle_sdk.py) from this source checkout or the
+standalone copy included in your RLE sample, then run:
 
 ```powershell
 python install_rle_sdk.py
@@ -78,8 +80,9 @@ an explicit unique development version. Otherwise a UTC timestamp is appended to
 the SDK base version. The source package version is never modified in place.
 
 The public checkout is separate from the source checkout and based on upstream
-`main`. First use creates it automatically. Only wheel artifacts, installer,
-manifest and this documentation may differ from upstream. Artifact and manifest
+`main`. First use creates it automatically. Only wheel artifacts and the JSON
+manifest may differ from upstream; the release guard rejects scripts and
+documentation in the public distribution. Artifact and manifest
 updates use separate commits so manifest URLs pin immutable artifact commits.
 Publishing uses `GH_TOKEN`, `GITHUB_TOKEN`, or Git's GitHub credentials; it requires
 write permission on the upstream distribution branch and permission to open PRs.

@@ -22,7 +22,6 @@ from install_rle_sdk import (
 )
 
 PACKAGE = Path(__file__).resolve().parents[2]
-TOOLING = Path(__file__).resolve().parent
 TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 
 
@@ -65,9 +64,7 @@ def ensure_public_checkout(checkout: Path, source: Path) -> None:
 
 
 def validate_public_paths(paths: list[str]) -> None:
-    allowed = {f"{PUBLIC_PATH}/{name}" for name in (
-        "registry.json", "install_rle_sdk.py", "README.md",
-    )}
+    allowed = {f"{PUBLIC_PATH}/registry.json"}
     wheel_pattern = (
         rf"{re.escape(PUBLIC_PATH)}/wheels/({VERSION_PATTERN})/"
         rf"azure_ai_projects-\1-py3-none-any\.whl"
@@ -137,11 +134,8 @@ def prepare_release(checkout: Path, wheel: Path, version: str) -> dict:
     }
     manifest["latest"] = version
     registry_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    for name in ("install_rle_sdk.py", "README.md"):
-        shutil.copyfile(TOOLING / name, public / name)
     resolve_release(manifest)
-    git(checkout, "add", "--", f"{PUBLIC_PATH}/registry.json",
-        f"{PUBLIC_PATH}/install_rle_sdk.py", f"{PUBLIC_PATH}/README.md")
+    git(checkout, "add", "--", f"{PUBLIC_PATH}/registry.json")
     git(checkout, "commit", "-m", f"Distribute RLE SDK {version}\n\n{TRAILER}")
     return manifest
 
@@ -220,9 +214,10 @@ def publish(checkout: Path, token: str) -> str:
         "head": PUBLIC_BRANCH, "base": "main", "draft": True,
         "body": (
             "## External RLE SDK preview distribution\n\n"
-            "This long-lived draft PR contains only packaged SDK wheels, a public JSON "
-            "manifest, an installer and distribution documentation. No SDK implementation "
-            "source changes or private repository references are included.\n\n"
+            "This long-lived draft PR contains only packaged SDK wheels and a public JSON "
+            "manifest. Release scripts, installers and documentation stay in the source "
+            "fork or sample repository. No SDK implementation source changes or private "
+            "repository references are included.\n\n"
             f"Registry: {MANIFEST_URL}\n\n"
             "Wheel URLs are pinned to artifact commits and verified with SHA-256. "
             "Container builds support latest and exact versions without source access. "

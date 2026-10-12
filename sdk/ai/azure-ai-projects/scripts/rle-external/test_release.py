@@ -178,6 +178,11 @@ def test_releases_preserve_versions_and_pin_artifact_commits(tmp_path):
     assert second["versions"][VERSION] == previous
     assert second["latest"] == SECOND_VERSION
     assert set(second["versions"]) == {VERSION, SECOND_VERSION}
+    assert set(release.git(checkout, "diff", "--name-only", "origin/main", "HEAD").splitlines()) == {
+        f"{installer.PUBLIC_PATH}/registry.json",
+        f"{installer.PUBLIC_PATH}/wheels/{VERSION}/{first_wheel.name}",
+        f"{installer.PUBLIC_PATH}/wheels/{SECOND_VERSION}/{second_wheel.name}",
+    }
     release.ensure_public_checkout(checkout, source)
     with pytest.raises(ValueError, match="already released"):
         release.prepare_release(checkout, first_wheel, VERSION)
@@ -187,6 +192,8 @@ def test_releases_preserve_versions_and_pin_artifact_commits(tmp_path):
 @pytest.mark.parametrize("path", [
     "sdk/ai/azure-ai-projects/azure/ai/projects/rle/__init__.py",
     f"{installer.PUBLIC_PATH}/release.py",
+    f"{installer.PUBLIC_PATH}/install_rle_sdk.py",
+    f"{installer.PUBLIC_PATH}/README.md",
     f"{installer.PUBLIC_PATH}/wheels/{VERSION}/secret.txt",
 ])
 def test_private_source_and_unexpected_files_cannot_be_published(path):
