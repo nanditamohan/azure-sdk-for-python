@@ -171,8 +171,20 @@ def ensure_public_checkout(checkout: Path, source: Path) -> None:
         raise ValueError(f"The public checkout must use branch {PUBLIC_BRANCH}.")
     if git(checkout, "status", "--porcelain"):
         raise ValueError("The public checkout must be clean before release preparation.")
-    changed = git(checkout, "diff", "--name-only", "origin/main", "HEAD").splitlines()
-    validate_public_paths(changed)
+    validate_public_paths(public_changes(checkout))
+
+
+def public_changes(checkout: Path) -> list[str]:
+    for deepen in (50, 200, 1000):
+        try:
+            git(checkout, "merge-base", "origin/main", "HEAD")
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 1:
+                raise
+            git(checkout, "fetch", f"--deepen={deepen}", "origin", "main", PUBLIC_BRANCH)
+        else:
+            break
+    return git(checkout, "diff", "--name-only", "origin/main...HEAD").splitlines()
 
 
 def validate_public_paths(paths: list[str]) -> None:
@@ -273,9 +285,7 @@ def github_token(username: str | None = None) -> str:
 
 
 def publish(checkout: Path, token: str) -> str:
-    validate_public_paths(
-        git(checkout, "diff", "--name-only", "origin/main", "HEAD").splitlines()
-    )
+    validate_public_paths(public_changes(checkout))
     if git(checkout, "status", "--porcelain"):
         raise ValueError("Refusing to publish a dirty public checkout.")
     manifest = json.loads((checkout / PUBLIC_PATH / "registry.json").read_text(encoding="utf-8"))
@@ -301,24 +311,13 @@ def publish(checkout: Path, token: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
-    parser.add_argument(
-        "--public-checkout", type=Path,
-        help="Public release checkout (default: sibling azure-sdk-for-python-rle-external)",
-    )
     parser.add_argument("--github-user", help="Select an existing Git Credential Manager account")
-    publishing = parser.add_mutually_exclusive_group()
-    publishing.add_argument("--publish", action="store_true", help="Build and publish without pausing for review")
-    publishing.add_argument("--publish-only", action="store_true", help="Publish already prepared and reviewed artifacts")
     args = parser.parse_args()
-    if args.publish_only and args.bump != "patch":
-        parser.error("--bump applies to preparation, not --publish-only.")
-    token = github_token(args.github_user) if args.publish or args.publish_only else None
+    token = github_token(args.github_user)
     source = Path(git(PACKAGE, "rev-parse", "--show-toplevel")).resolve()
-    checkout = (
-        args.public_checkout or source.parent / "azure-sdk-for-python-rle-external"
-    ).resolve()
-    ensure_public_checkout(checkout, source)
-    if not args.publish_only:
+    with tempfile.TemporaryDirectory(prefix="rle-sdk-release-") as temporary_checkout:
+        checkout = (Path(temporary_checkout) / "public").resolve()
+        ensure_public_checkout(checkout, source)
         if git(
             source, "status", "--porcelain", "--untracked-files=all", "--", str(PACKAGE),
             ":(exclude)sdk/ai/azure-ai-projects/scripts/rle",
@@ -329,14 +328,14 @@ def main() -> None:
         if match is None:
             raise ValueError("Cannot determine the SDK base version.")
         version = next_version(checkout, match[1], args.bump)
+        print(f"Building RLE SDK {version} ({args.bump} bump)...", flush=True)
         with tempfile.TemporaryDirectory(prefix="rle-sdk-build-") as temporary:
             wheel = build_wheel(PACKAGE, version, Path(temporary))
             prepare_release(checkout, wheel, version)
-        print(f"Prepared SDK {version} in {checkout}")
-    if token is not None:
-        print(publish(checkout, token))
-    else:
-        print("Not uploaded. Review/test the prepared wheel, then use --publish-only.")
+        pr_url = publish(checkout, token)
+        print(f"Published RLE SDK {version}. Registry latest updated to {version}.")
+        print(f"Registry: {MANIFEST_URL}")
+        print(f"PR: {pr_url}")
 
 
 if __name__ == "__main__":
