@@ -1,4 +1,4 @@
-"""Build RLE SDK wheels and prepare or publish the public distribution PR."""
+"""Build and publish SDK beta wheels to the existing RLE distribution PR."""
 
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 import zipfile
 
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
 PUBLIC_BRANCH = "rle-external-releases"
 PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle-external"
+PUBLIC_PR_URL = f"https://github.com/{PUBLIC_REPOSITORY}/pull/49482"
 MANIFEST_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/"
     f"{PUBLIC_BRANCH}/{PUBLIC_PATH}/registry.json"
 )
-BETA_VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+b[1-9][0-9]*"
 VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+(?:b[1-9][0-9]*|\.dev[0-9]+)"
 
 PACKAGE = Path(__file__).resolve().parents[2]
@@ -117,14 +117,24 @@ def read_registry(checkout: Path) -> dict | None:
     return manifest
 
 
-def next_beta_version(checkout: Path, base_version: str) -> str:
+def next_version(checkout: Path, base_version: str, bump: str = "patch") -> str:
+    if bump not in {"patch", "minor", "major"}:
+        raise ValueError("Version bump must be patch, minor, or major.")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base_version):
+        raise ValueError("The SDK base version must be MAJOR.MINOR.PATCH.")
     manifest = read_registry(checkout)
-    numbers = [
-        int(match[1])
-        for version in (manifest["versions"] if manifest is not None else {})
-        if (match := re.fullmatch(rf"{re.escape(base_version)}b([1-9][0-9]*)", version))
-    ]
-    return f"{base_version}b{max(numbers, default=0) + 1}"
+    versions = [base_version, *(manifest["versions"] if manifest is not None else {})]
+    major, minor, patch = max(
+        tuple(int(part) for part in re.split(r"b|\.dev", version, maxsplit=1)[0].split("."))
+        for version in versions
+    )
+    if bump == "major":
+        major, minor, patch = major + 1, 0, 0
+    elif bump == "minor":
+        minor, patch = minor + 1, 0
+    else:
+        patch += 1
+    return f"{major}.{minor}.{patch}b1"
 
 
 def git(checkout: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
@@ -262,19 +272,6 @@ def github_token(username: str | None = None) -> str:
     return credentials["password"]
 
 
-def github_api(token: str, path: str, data: dict | None = None) -> object:
-    request = Request(
-        f"https://api.github.com/{path}",
-        data=json.dumps(data).encode("utf-8") if data is not None else None,
-        headers={
-            "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-            "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urlopen(request, timeout=60) as response:
-        return json.load(response)
-
-
 def publish(checkout: Path, token: str) -> str:
     validate_public_paths(
         git(checkout, "diff", "--name-only", "origin/main", "HEAD").splitlines()
@@ -298,37 +295,20 @@ def publish(checkout: Path, token: str) -> str:
     with tempfile.TemporaryDirectory(prefix="rle-public-check-") as temporary:
         for version in published["versions"]:
             download_wheel(resolve_release(published, version), Path(temporary))
-    pulls = github_api(
-        token, f"repos/{PUBLIC_REPOSITORY}/pulls?state=open&head=Azure:{PUBLIC_BRANCH}&base=main"
-    )
-    if not isinstance(pulls, list) or len(pulls) > 1:
-        raise ValueError("Expected at most one open SDK distribution PR.")
-    if pulls:
-        return pulls[0]["html_url"]
-    pull = github_api(token, f"repos/{PUBLIC_REPOSITORY}/pulls", {
-        "title": "RLE SDK beta preview: wheels and registry",
-        "head": PUBLIC_BRANCH, "base": "main", "draft": True,
-        "body": f"""## RLE SDK beta preview
-
-Beta release of `azure-ai-projects[rle]` for trying the RLE environment samples.
-
-- [Versions and wheel downloads]({MANIFEST_URL})
-- [RLE sample setup](https://github.com/sujit-kamireddy/rle-samples/blob/rle-public-sdk-wheels/README.md#rle-sdk-installation)
-""",
-    })
-    if not isinstance(pull, dict) or not isinstance(pull.get("html_url"), str):
-        raise ValueError("GitHub did not return a PR URL.")
-    return pull["html_url"]
+    return PUBLIC_PR_URL
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", help="Unique MAJOR.MINOR.PATCHbNUMBER beta version")
+    parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
     parser.add_argument("--public-checkout", type=Path, required=True)
     parser.add_argument("--github-user", help="Select an existing Git Credential Manager account")
-    parser.add_argument("--publish", action="store_true", help="Push artifacts and create/reuse the draft PR")
-    parser.add_argument("--publish-only", action="store_true", help="Publish an already prepared clean checkout")
+    publishing = parser.add_mutually_exclusive_group()
+    publishing.add_argument("--publish", action="store_true", help="Build and publish without pausing for review")
+    publishing.add_argument("--publish-only", action="store_true", help="Publish already prepared and reviewed artifacts")
     args = parser.parse_args()
+    if args.publish_only and args.bump != "patch":
+        parser.error("--bump applies to preparation, not --publish-only.")
     token = github_token(args.github_user) if args.publish or args.publish_only else None
     source = Path(git(PACKAGE, "rev-parse", "--show-toplevel")).resolve()
     checkout = args.public_checkout.resolve()
@@ -336,18 +316,14 @@ def main() -> None:
     if not args.publish_only:
         if git(
             source, "status", "--porcelain", "--untracked-files=all", "--", str(PACKAGE),
-            ":(exclude)sdk/ai/azure-ai-projects/scripts/rle-external",
+            ":(exclude)sdk/ai/azure-ai-projects/scripts/rle",
         ):
             raise ValueError("Commit SDK package changes before building a release.")
         current = (PACKAGE / "azure" / "ai" / "projects" / "_version.py").read_text(encoding="utf-8")
         match = re.search(r'^VERSION = "([0-9]+\.[0-9]+\.[0-9]+)[^"]*"$', current, re.MULTILINE)
         if match is None:
             raise ValueError("Cannot determine the SDK base version.")
-        version = (
-            args.version if args.version is not None else next_beta_version(checkout, match[1])
-        )
-        if not re.fullmatch(BETA_VERSION_PATTERN, version):
-            raise ValueError("Use a unique MAJOR.MINOR.PATCHbNUMBER beta version, such as 2.7.0b1.")
+        version = next_version(checkout, match[1], args.bump)
         with tempfile.TemporaryDirectory(prefix="rle-sdk-build-") as temporary:
             wheel = build_wheel(PACKAGE, version, Path(temporary))
             prepare_release(checkout, wheel, version)
@@ -355,7 +331,7 @@ def main() -> None:
     if token is not None:
         print(publish(checkout, token))
     else:
-        print("Not uploaded. Run again with --publish-only to push and create/reuse the draft PR.")
+        print("Not uploaded. Review/test the prepared wheel, then use --publish-only.")
 
 
 if __name__ == "__main__":
