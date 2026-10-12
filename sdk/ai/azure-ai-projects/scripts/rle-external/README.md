@@ -15,13 +15,13 @@ standalone copy included in your RLE sample, then run:
 
 ```powershell
 python install_rle_sdk.py
-$env:AZURE_AI_PROJECTS_RLE_VERSION = "2.7.0.dev20261012000000"
-python install_rle_sdk.py
+python install_rle_sdk.py --version 2.7.0.dev20261012000000
 ```
 
 The example version is illustrative; use a version listed in the registry.
-Selection order is `--version`, `AZURE_AI_PROJECTS_RLE_VERSION`, `--version-file`,
-then `latest`. An empty, invalid, or unavailable explicit version fails. The
+For local Python installation, `--version` can override the installer's
+`AZURE_AI_PROJECTS_RLE_VERSION` environment value; otherwise it defaults to
+`latest`. An empty, invalid, or unavailable explicit version fails. The
 installer verifies the wheel's SHA-256, package version, RLE extra and environment
 module before pip installs the wheel with its `rle` dependencies. Dependencies
 use the normal pip index or `--index-url`; the SDK itself never resolves through
@@ -53,11 +53,17 @@ have a five-minute CDN cache and GitHub REST has anonymous rate limits, so neith
 is a reliable Docker cache-busting input. `pip --no-cache-dir` alone does not
 invalidate Docker layers. Do not bake a registry snapshot into the sample.
 
-Use `ARG AZURE_AI_PROJECTS_RLE_VERSION` for builders that accept build arguments.
-Host environment variables must be explicitly forwarded as build arguments;
-setting a runtime container variable cannot replace an already installed SDK.
-For builders without argument forwarding, copy a sample-local
-`sdk-version.txt` containing `latest` or the exact version into the build.
+Sample Dockerfiles set the build-time SDK selection directly before installation:
+
+```dockerfile
+ENV AZURE_AI_PROJECTS_RLE_VERSION=latest
+```
+
+Consumers can edit that line in their local Dockerfile to pin a version from the
+registry. No host SDK environment variable, Docker build argument, version file,
+or `azd` CLI configuration is needed. The CLI builds the container; it neither
+installs nor selects the SDK. Runtime container variables cannot replace the SDK
+already baked into an image.
 
 ## Maintainer release process
 

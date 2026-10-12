@@ -127,18 +127,15 @@ def test_wrong_wheel_contents_fail(tmp_path, kwargs):
         installer.validate_wheel(wheel, VERSION)
 
 
-def test_selector_precedence_and_empty_values_fail(monkeypatch, tmp_path):
-    version_file = tmp_path / "sdk-version.txt"
-    version_file.write_text(VERSION + "\n")
+def test_selector_precedence_and_empty_values_fail(monkeypatch):
     monkeypatch.delenv("AZURE_AI_PROJECTS_RLE_VERSION", raising=False)
-    assert installer.selected_version(None, None) == "latest"
-    assert installer.selected_version(None, version_file) == VERSION
+    assert installer.selected_version(None) == "latest"
     monkeypatch.setenv("AZURE_AI_PROJECTS_RLE_VERSION", SECOND_VERSION)
-    assert installer.selected_version(None, version_file) == SECOND_VERSION
-    assert installer.selected_version(VERSION, version_file) == VERSION
+    assert installer.selected_version(None) == SECOND_VERSION
+    assert installer.selected_version(VERSION) == VERSION
     monkeypatch.setenv("AZURE_AI_PROJECTS_RLE_VERSION", "")
     with pytest.raises(ValueError):
-        installer.resolve_release(manifest_for(), installer.selected_version(None, version_file))
+        installer.resolve_release(manifest_for(), installer.selected_version(None))
 
 
 def test_pip_receives_verified_wheel_extra_and_requirements(tmp_path, monkeypatch):

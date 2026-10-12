@@ -107,14 +107,12 @@ def load_manifest(location: str) -> object:
     return json.loads(Path(location).read_text(encoding="utf-8"))
 
 
-def selected_version(explicit: str | None, version_file: Path | None) -> str:
+def selected_version(explicit: str | None) -> str:
     if explicit is not None:
         return explicit
     configured = os.environ.get("AZURE_AI_PROJECTS_RLE_VERSION")
     if configured is not None:
         return configured
-    if version_file is not None:
-        return version_file.read_text(encoding="utf-8").strip()
     return "latest"
 
 
@@ -122,13 +120,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default=MANIFEST_URL)
     parser.add_argument("--version")
-    parser.add_argument("--version-file", type=Path)
     parser.add_argument("--requirements", type=Path)
     parser.add_argument("--index-url", default=os.environ.get("PIP_INDEX_URL"))
     parser.add_argument("--download-only", type=Path)
     args = parser.parse_args()
     release = resolve_release(
-        load_manifest(args.manifest), selected_version(args.version, args.version_file)
+        load_manifest(args.manifest), selected_version(args.version)
     )
     print(f"RLE SDK: {release.version} (SHA-256 {release.sha256})", flush=True)
     if args.download_only is not None:
