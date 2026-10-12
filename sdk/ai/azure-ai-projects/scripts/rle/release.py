@@ -301,7 +301,10 @@ def publish(checkout: Path, token: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
-    parser.add_argument("--public-checkout", type=Path, required=True)
+    parser.add_argument(
+        "--public-checkout", type=Path,
+        help="Public release checkout (default: sibling azure-sdk-for-python-rle-external)",
+    )
     parser.add_argument("--github-user", help="Select an existing Git Credential Manager account")
     publishing = parser.add_mutually_exclusive_group()
     publishing.add_argument("--publish", action="store_true", help="Build and publish without pausing for review")
@@ -311,7 +314,9 @@ def main() -> None:
         parser.error("--bump applies to preparation, not --publish-only.")
     token = github_token(args.github_user) if args.publish or args.publish_only else None
     source = Path(git(PACKAGE, "rev-parse", "--show-toplevel")).resolve()
-    checkout = args.public_checkout.resolve()
+    checkout = (
+        args.public_checkout or source.parent / "azure-sdk-for-python-rle-external"
+    ).resolve()
     ensure_public_checkout(checkout, source)
     if not args.publish_only:
         if git(

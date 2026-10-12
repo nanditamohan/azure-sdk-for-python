@@ -212,6 +212,36 @@ def test_cli_builds_patch_by_default_or_the_selected_bump(tmp_path, monkeypatch,
     assert prepare.call_args.args == (checkout, tmp_path / "sdk.whl", expected)
 
 
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("publish_only", [False, True])
+def test_cli_uses_same_default_or_overridden_checkout_for_preparation_and_publication(
+    tmp_path, monkeypatch, cli_source, override, publish_only,
+):
+    checkout = tmp_path / ("custom-public" if override else "azure-sdk-for-python-rle-external")
+    arguments = ["release.py"]
+    if override:
+        arguments.extend(["--public-checkout", str(checkout)])
+    if publish_only:
+        arguments.append("--publish-only")
+    monkeypatch.setattr(sys, "argv", arguments)
+    with (
+        patch.object(release, "ensure_public_checkout") as ensure,
+        patch.object(release, "build_wheel", return_value=tmp_path / "sdk.whl") as build,
+        patch.object(release, "prepare_release") as prepare,
+        patch.object(release, "github_token", return_value="test-token"),
+        patch.object(release, "publish", return_value=release.PUBLIC_PR_URL) as publish,
+    ):
+        release.main()
+    ensure.assert_called_once_with(checkout, cli_source)
+    if publish_only:
+        build.assert_not_called()
+        prepare.assert_not_called()
+        publish.assert_called_once_with(checkout, "test-token")
+    else:
+        prepare.assert_called_once_with(checkout, tmp_path / "sdk.whl", "2.7.1b1")
+        publish.assert_not_called()
+
+
 @pytest.mark.parametrize("options", [
     ["--publish", "--publish-only"], ["--publish-only", "--bump", "minor"],
 ])

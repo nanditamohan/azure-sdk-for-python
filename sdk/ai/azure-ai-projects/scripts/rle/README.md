@@ -3,21 +3,20 @@
 Build SDK wheels and publish the version registry to
 [Azure/azure-sdk-for-python#49482](https://github.com/Azure/azure-sdk-for-python/pull/49482).
 Prerequisites: Python with `build`, Git, committed SDK changes and public-branch
-write access. The separate public checkout is created on first use; refresh it
-before preparing later releases.
+write access. A separate public checkout, `azure-sdk-for-python-rle-external`,
+is created beside the source repository on first use; refresh it before later
+releases. Use `--public-checkout <path>` only to override its location.
 
 From the source repository root:
 
 ```powershell
 $release = "sdk\ai\azure-ai-projects\scripts\rle\release.py"
-$public = "C:\work\azure-sdk-for-python-rle-external"
-
-python $release --public-checkout $public               # Patch (default): 2.7.1b1
-python $release --public-checkout $public --bump minor  # Or minor: 2.8.0b1
-python $release --public-checkout $public --bump major  # Or major: 3.0.0b1
+python $release               # Patch (default): 2.7.1b1
+python $release --bump minor  # Or minor: 2.8.0b1
+python $release --bump major  # Or major: 3.0.0b1
 
 # After testing the prepared wheel:
-python $release --public-checkout $public --publish-only
+python $release --publish-only
 ```
 
 Versioning bumps the highest core version in the SDK or registry, using a `b1`
