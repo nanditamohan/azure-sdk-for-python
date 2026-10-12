@@ -8,10 +8,16 @@ the public manifest and downloading wheels requires no source repository
 access or credentials. Wheels contain Python code: publishing them is public
 distribution of the implementation, not a way to keep shipped code confidential.
 
-## Install
+## Container dependency
 
-From the root of an RLE samples repository checkout, run its
-[shared installer](https://github.com/sujit-kamireddy/rle-samples/blob/9f6bf807e8ce8b3dc6d07daa574066075f59dc15/tools/install_rle_sdk.py):
+The external consumer is the RLE environment container build: during
+`azd ai rle publish`, the CLI builds the environment image and the sample
+Dockerfile installs the SDK. The CLI executable neither imports nor installs
+this SDK. No host SDK installation or CLI SDK configuration is required.
+
+For local server development outside Docker only, run the
+[shared installer](https://github.com/sujit-kamireddy/rle-samples/blob/9f6bf807e8ce8b3dc6d07daa574066075f59dc15/tools/install_rle_sdk.py)
+from the root of an RLE samples repository checkout:
 
 ```powershell
 python tools\install_rle_sdk.py
@@ -33,11 +39,13 @@ The manifest is a JSON object with `schema_version: 1`, `package:
 "azure-ai-projects"`, `channel: "rle-external"`, `latest`, and `versions`. Each
 version maps to a wheel `filename`, immutable commit-pinned public `url`, and
 lowercase hexadecimal `sha256`. New universal `py3-none-any` wheels use unique
-`MAJOR.MINOR.PATCHbNUMBER` beta versions. Previously published timestamped `.dev`
-versions remain valid and their artifacts and registry entries are preserved.
+`MAJOR.MINOR.PATCHbNUMBER` beta versions. Registry readers also understand the
+earlier `.dev` format, but the initial experimental `.dev` artifacts were removed
+before external preview use. Only approved versions listed in the public registry
+are available for consumer pins.
 `latest` means the most
 recent deliberately published RLE build, not the latest package on PyPI.
-Existing version entries and artifacts must never be overwritten.
+Approved version entries and artifacts must never be overwritten.
 
 ## Container builds
 
@@ -94,7 +102,7 @@ the next beta number for the SDK base version from the public checkout's registr
 `2.7.0b1`, `2.7.0b2`, and so on. Refresh an existing public checkout before
 preparing a release so numbering includes all published versions. Python
 normalizes literal `preview` version labels to release candidates, so beta
-notation is used instead. New `.dev` releases are no longer accepted by the CLI.
+notation is used instead. New `.dev` releases are no longer accepted by `release.py`.
 The source package version is never modified in place. Validate the prepared wheel
 and sample builds before publishing; only deliberately approved releases should
 advance `latest`.

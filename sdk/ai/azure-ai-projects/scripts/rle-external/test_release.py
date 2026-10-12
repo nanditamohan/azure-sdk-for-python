@@ -346,11 +346,13 @@ def test_publish_creates_draft_pr_only_after_anonymous_verification(tmp_path):
             assert data["draft"] is True
             assert data["head"] == release.PUBLIC_BRANCH
             assert "sujit-kamireddy/azure-sdk-for-python" not in data["body"]
-            assert "### Build with the latest preview" in data["body"]
-            assert "### Verify" in data["body"]
-            assert "### Pin a version" in data["body"]
-            assert "### Update" in data["body"]
-            assert f"ENV AZURE_AI_PROJECTS_RLE_VERSION={VERSION}" in data["body"]
+            assert "## RLE SDK beta preview" in data["body"]
+            assert release.MANIFEST_URL in data["body"]
+            assert "README.md#rle-sdk-installation" in data["body"]
+            assert len(data["body"]) < 700
+            assert "CLI" not in data["body"]
+            assert "azd" not in data["body"]
+            assert "remain available" not in data["body"]
             return {"html_url": "https://github.com/Azure/azure-sdk-for-python/pull/2"}
         return []
 

@@ -306,59 +306,14 @@ def publish(checkout: Path, token: str) -> str:
     if pulls:
         return pulls[0]["html_url"]
     pull = github_api(token, f"repos/{PUBLIC_REPOSITORY}/pulls", {
-        "title": "Distribute external RLE SDK wheels and registry",
+        "title": "RLE SDK beta preview: wheels and registry",
         "head": PUBLIC_BRANCH, "base": "main", "draft": True,
-        "body": f"""## Use the RLE SDK (private preview)
+        "body": f"""## RLE SDK beta preview
 
-The SDK is installed inside your environment container. No local SDK installation
-or SDK configuration is required in the azd CLI.
+Beta release of `azure-ai-projects[rle]` for trying the RLE environment samples.
 
-Prerequisites: Docker with BuildKit supporting Git-source ADD and ADD --checksum,
-and an updated sample Dockerfile from sujit-kamireddy/rle-samples#77.
-For RLE CLI setup, see Azure/azure-dev#10423.
-
-### Build with the latest preview
-
-The sample Dockerfiles default to:
-
-```dockerfile
-ENV AZURE_AI_PROJECTS_RLE_VERSION=latest
-```
-
-Run from the sample's Docker build directory:
-
-```powershell
-docker build -t rle-environment .
-```
-
-### Verify
-
-```powershell
-docker run --rm rle-environment python -c "from importlib.metadata import version; print(version('azure-ai-projects'))"
-```
-
-### Pin a version
-
-For reproducible builds, edit the SDK ENV line in your local Dockerfile before rebuilding:
-
-```dockerfile
-ENV AZURE_AI_PROJECTS_RLE_VERSION={manifest['latest']}
-```
-
-Choose an exact version from the [public registry]({MANIFEST_URL}).
-An unavailable version fails the build; it never falls back to latest.
-New previews use beta versions; existing .dev version pins remain available.
-
-### Update
-
-Set the Dockerfile ENV line back to latest and rebuild with the same command.
-New approved releases are picked up on rebuild without requiring --no-cache.
-Existing images and running containers are not upgraded automatically, and
-explicitly pinned versions remain pinned.
-
-The public registry and wheels require no GitHub credentials. Wheel downloads
-use immutable commit URLs and SHA-256 verification. This PR contains only the
-registry and wheels; retain the distribution branch while customers use it.
+- [Versions and wheel downloads]({MANIFEST_URL})
+- [RLE sample setup](https://github.com/sujit-kamireddy/rle-samples/blob/rle-public-sdk-wheels/README.md#rle-sdk-installation)
 """,
     })
     if not isinstance(pull, dict) or not isinstance(pull.get("html_url"), str):
