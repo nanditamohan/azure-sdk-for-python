@@ -146,19 +146,27 @@ def prepare_release(checkout: Path, wheel: Path, version: str) -> dict:
     return manifest
 
 
-def github_token() -> str:
+def github_token(username: str | None = None) -> str:
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
         if os.environ.get(name):
             return os.environ[name]
+    credential_request = "protocol=https\nhost=github.com\n"
+    if username is not None:
+        if not re.fullmatch(r"[A-Za-z0-9-]+", username):
+            raise ValueError("Invalid GitHub username.")
+        credential_request += f"username={username}\n"
     result = subprocess.run(
-        ["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
+        ["git", "credential", "fill"], input=credential_request + "\n",
         text=True, capture_output=True,
     )
     credentials = dict(
         line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
     )
     if result.returncode or not credentials.get("password"):
-        raise RuntimeError("Publishing requires GH_TOKEN, GITHUB_TOKEN, or GitHub Git credentials.")
+        raise RuntimeError(
+            "Publishing requires GH_TOKEN, GITHUB_TOKEN, or GitHub Git credentials. "
+            "Use --github-user to select an account when Git has multiple accounts."
+        )
     return credentials["password"]
 
 
@@ -232,10 +240,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", help="Unique MAJOR.MINOR.PATCH.devNUMBER package version")
     parser.add_argument("--public-checkout", type=Path, required=True)
+    parser.add_argument("--github-user", help="Select an existing Git Credential Manager account")
     parser.add_argument("--publish", action="store_true", help="Push artifacts and create/reuse the draft PR")
     parser.add_argument("--publish-only", action="store_true", help="Publish an already prepared clean checkout")
     args = parser.parse_args()
-    token = github_token() if args.publish or args.publish_only else None
+    token = github_token(args.github_user) if args.publish or args.publish_only else None
     source = Path(git(PACKAGE, "rev-parse", "--show-toplevel")).resolve()
     checkout = args.public_checkout.resolve()
     ensure_public_checkout(checkout, source)

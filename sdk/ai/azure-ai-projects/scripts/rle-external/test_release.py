@@ -240,6 +240,17 @@ def test_no_credentials_are_needed_for_prepare_and_missing_publish_auth_fails(mo
             release.github_token()
 
 
+def test_account_selection_is_forwarded_without_exposing_credentials(monkeypatch):
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    credential = subprocess.CompletedProcess([], 0, "username=test-user\npassword=test-token\n", "")
+    with patch.object(release.subprocess, "run", return_value=credential) as run:
+        assert release.github_token("test-user") == "test-token"
+    assert run.call_args.kwargs["input"] == "protocol=https\nhost=github.com\nusername=test-user\n\n"
+    with pytest.raises(ValueError, match="username"):
+        release.github_token("user\npassword=injected")
+
+
 def test_publish_reuses_existing_pr_and_verifies_anonymous_downloads(tmp_path):
     checkout = public_checkout(tmp_path)
     manifest = manifest_for()
