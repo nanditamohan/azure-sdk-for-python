@@ -1,4 +1,4 @@
-"""Focused tests for SDK beta release preparation and publication."""
+"""Focused tests for local SDK beta release preparation."""
 
 from __future__ import annotations
 
@@ -103,20 +103,6 @@ def test_invalid_artifact_entry_fails(field, value):
         release.resolve_release(manifest)
 
 
-def test_download_checks_hash_and_wheel_metadata(tmp_path):
-    data = wheel_bytes()
-    with patch.object(release, "urlopen", return_value=io.BytesIO(data)):
-        wheel = release.download_wheel(release.resolve_release(manifest_for()), tmp_path)
-    assert wheel.read_bytes() == data
-
-
-def test_checksum_failure_removes_download(tmp_path):
-    with patch.object(release, "urlopen", return_value=io.BytesIO(b"tampered")):
-        with pytest.raises(ValueError, match="SHA-256 mismatch"):
-            release.download_wheel(release.resolve_release(manifest_for()), tmp_path)
-    assert not list(tmp_path.iterdir())
-
-
 def test_release_tooling_does_not_depend_on_a_consumer_installer():
     assert not (Path(release.__file__).parent / "install_rle_sdk.py").exists()
 
@@ -184,7 +170,7 @@ def cli_source(tmp_path, monkeypatch):
 @pytest.mark.parametrize("bump", ["", "beta", "dev", VERSION])
 def test_cli_rejects_invalid_bumps_before_building(tmp_path, monkeypatch, cli_source, bump):
     monkeypatch.setattr(sys, "argv", [
-        "release.py", "--bump", bump,
+        "release.py", "--public-checkout", str(tmp_path / "public"), "--bump", bump,
     ])
     with patch.object(release, "build_wheel") as build:
         with pytest.raises(SystemExit) as error:
@@ -199,7 +185,9 @@ def test_cli_rejects_invalid_bumps_before_building(tmp_path, monkeypatch, cli_so
 def test_cli_builds_patch_by_default_or_the_selected_bump(
     tmp_path, monkeypatch, cli_source, capsys, bump, expected,
 ):
-    arguments = ["release.py"]
+    checkout = tmp_path / "public"
+    checkout.mkdir()
+    arguments = ["release.py", "--public-checkout", str(checkout)]
     if bump is not None:
         arguments.extend(["--bump", bump])
     monkeypatch.setattr(sys, "argv", arguments)
@@ -207,54 +195,68 @@ def test_cli_builds_patch_by_default_or_the_selected_bump(
         patch.object(release, "ensure_public_checkout") as ensure,
         patch.object(release, "build_wheel", return_value=tmp_path / "sdk.whl") as build,
         patch.object(release, "prepare_release") as prepare,
-        patch.object(release, "github_token", return_value="test-token"),
-        patch.object(release, "publish", return_value=release.PUBLIC_PR_URL) as publish,
+        patch.object(release, "git", wraps=release.git) as git,
     ):
         release.main()
-    checkout = ensure.call_args.args[0]
-    ensure.assert_called_once_with(checkout, cli_source)
+    assert len(ensure.call_args_list) == 2
+    assert all(call.args == (checkout, cli_source) for call in ensure.call_args_list)
     assert build.call_args.args[1] == expected
-    assert checkout.parent.name.startswith("rle-sdk-release-")
-    assert checkout != cli_source.parent / "azure-sdk-for-python-rle-external"
     prepare.assert_called_once_with(checkout, tmp_path / "sdk.whl", expected)
-    publish.assert_called_once_with(checkout, "test-token")
-    assert not checkout.parent.exists()
+    assert any(
+        call.args == (checkout, "pull", "--ff-only", "origin", release.PUBLIC_BRANCH)
+        for call in git.call_args_list
+    )
+    assert all(call.args[1] not in {"push", "commit", "add", "clone"} for call in git.call_args_list)
+    assert checkout.exists()
     output = capsys.readouterr().out
-    assert f"Published RLE SDK {expected}. Registry latest updated to {expected}." in output
-    assert f"Registry: {release.MANIFEST_URL}" in output
+    assert f"Prepared RLE SDK {expected}. Registry latest updated locally to {expected}. Nothing pushed." in output
+    assert f"Public registry (after push): {release.MANIFEST_URL}" in output
     assert f"PR: {release.PUBLIC_PR_URL}" in output
 
 
 @pytest.mark.parametrize("failure", [
-    "ensure_public_checkout", "build_wheel", "prepare_release", "publish",
+    "ensure_public_checkout", "build_wheel", "prepare_release",
 ])
-def test_temporary_checkout_is_removed_when_release_fails(
+def test_user_checkout_is_retained_when_release_fails(
     tmp_path, monkeypatch, cli_source, capsys, failure,
 ):
-    monkeypatch.setattr(sys, "argv", ["release.py"])
+    checkout = tmp_path / "public"
+    checkout.mkdir()
+    marker = checkout / "retained.txt"
+    marker.write_text("Keep this checkout.\n")
+    monkeypatch.setattr(sys, "argv", ["release.py", "--public-checkout", str(checkout)])
     with (
         patch.object(release, "ensure_public_checkout") as ensure,
         patch.object(release, "build_wheel", return_value=tmp_path / "sdk.whl") as build,
         patch.object(release, "prepare_release") as prepare,
-        patch.object(release, "github_token", return_value="test-token"),
-        patch.object(release, "publish") as publish,
     ):
         {"ensure_public_checkout": ensure, "build_wheel": build,
-         "prepare_release": prepare, "publish": publish}[failure].side_effect = ValueError("Release failed")
+         "prepare_release": prepare}[failure].side_effect = ValueError("Release failed")
         with pytest.raises(ValueError, match="Release failed"):
             release.main()
-    assert not ensure.call_args.args[0].parent.exists()
-    assert "Published RLE SDK" not in capsys.readouterr().out
+    assert marker.read_text() == "Keep this checkout.\n"
+    assert "Prepared RLE SDK" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("option", ["--publish", "--publish-only", "--public-checkout"])
-def test_cli_rejects_removed_workflows(monkeypatch, option):
-    monkeypatch.setattr(sys, "argv", ["release.py", option])
-    with patch.object(release, "github_token") as token:
+@pytest.mark.parametrize("option", ["--publish", "--publish-only", "--github-user"])
+def test_cli_rejects_removed_workflows(tmp_path, monkeypatch, option):
+    monkeypatch.setattr(sys, "argv", [
+        "release.py", "--public-checkout", str(tmp_path / "public"), option,
+    ])
+    with patch.object(release, "build_wheel") as build:
         with pytest.raises(SystemExit) as error:
             release.main()
     assert error.value.code == 2
-    token.assert_not_called()
+    build.assert_not_called()
+
+
+def test_cli_requires_an_explicit_public_checkout(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["release.py"])
+    with patch.object(release, "git") as git:
+        with pytest.raises(SystemExit) as error:
+            release.main()
+    assert error.value.code == 2
+    git.assert_not_called()
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -268,34 +270,43 @@ def test_wrong_wheel_contents_fail(tmp_path, kwargs):
 
 
 @pytest.mark.parametrize("first_version", [VERSION, LEGACY_VERSION])
-def test_releases_preserve_versions_and_pin_artifact_commits(tmp_path, first_version):
+def test_releases_preserve_versions_and_leave_changes_unstaged(tmp_path, first_version):
     checkout = public_checkout(tmp_path)
     source = tmp_path / "private-source"
     source.mkdir()
     release.ensure_public_checkout(checkout, source)
+    original_head = release.git(checkout, "rev-parse", "HEAD")
     first_wheel = tmp_path / f"azure_ai_projects-{first_version}-py3-none-any.whl"
     first_wheel.write_bytes(wheel_bytes(first_version))
     first = release.prepare_release(checkout, first_wheel, first_version)
     previous = first["versions"][first_version].copy()
-    artifact_commit = previous["url"].split("/")[5]
+    assert previous["url"].split("/")[5] == release.PUBLIC_BRANCH
     path = f"{release.PUBLIC_PATH}/wheels/{first_version}/{first_wheel.name}"
-    assert release.git(checkout, "cat-file", "-e", f"{artifact_commit}:{path}") == ""
-    assert artifact_commit != release.git(checkout, "rev-parse", "HEAD")
+    assert (checkout / path).read_bytes() == first_wheel.read_bytes()
+    assert release.git(checkout, "rev-parse", "HEAD") == original_head
+    assert release.git(checkout, "diff", "--cached", "--name-only") == ""
+    release.git(checkout, "add", "--", release.PUBLIC_PATH)
+    release.git(checkout, "commit", "-m", "User commits the reviewed release")
+    committed_head = release.git(checkout, "rev-parse", "HEAD")
     second_wheel = tmp_path / f"azure_ai_projects-{SECOND_VERSION}-py3-none-any.whl"
     second_wheel.write_bytes(wheel_bytes(SECOND_VERSION))
     second = release.prepare_release(checkout, second_wheel, SECOND_VERSION)
     assert second["versions"][first_version] == previous
     assert second["latest"] == SECOND_VERSION
     assert set(second["versions"]) == {first_version, SECOND_VERSION}
-    assert set(release.git(checkout, "diff", "--name-only", "origin/main", "HEAD").splitlines()) == {
+    assert set(release.public_changes(checkout)) == {
         f"{release.PUBLIC_PATH}/registry.json",
         f"{release.PUBLIC_PATH}/wheels/{first_version}/{first_wheel.name}",
-        f"{release.PUBLIC_PATH}/wheels/{SECOND_VERSION}/{second_wheel.name}",
     }
-    release.ensure_public_checkout(checkout, source)
+    assert release.git(checkout, "rev-parse", "HEAD") == committed_head
+    assert release.git(checkout, "diff", "--cached", "--name-only") == ""
+    assert release.git(checkout, "diff", "--name-only") == f"{release.PUBLIC_PATH}/registry.json"
+    assert release.git(checkout, "ls-files", "--others", "--exclude-standard") == (
+        f"{release.PUBLIC_PATH}/wheels/{SECOND_VERSION}/{second_wheel.name}"
+    )
     with pytest.raises(ValueError, match="already released"):
         release.prepare_release(checkout, first_wheel, first_version)
-    assert not release.git(checkout, "status", "--porcelain")
+    assert release.git(checkout, "rev-parse", "HEAD") == committed_head
 
 
 @pytest.mark.parametrize("path", [
@@ -319,41 +330,122 @@ def test_dirty_or_source_checkout_is_rejected(tmp_path):
         release.ensure_public_checkout(checkout, tmp_path / "source")
 
 
-def test_first_use_initializes_public_checkout_only_from_upstream(tmp_path):
-    checkout = tmp_path / "new-public"
-    with patch.object(release.subprocess, "run") as run:
-        with patch.object(release, "git") as git:
-            git.side_effect = ["", "", "", str(checkout), f"https://github.com/{release.PUBLIC_REPOSITORY}.git",
-                               release.PUBLIC_BRANCH, "", "a" * 40, ""]
+def test_missing_checkout_is_rejected_without_cloning(tmp_path):
+    checkout = tmp_path / "missing-public"
+    with patch.object(release, "git") as git:
+        with pytest.raises(ValueError, match="existing public SDK checkout"):
             release.ensure_public_checkout(checkout, tmp_path / "source")
-    assert run.call_args.args[0][-2:] == [
-        f"https://github.com/{release.PUBLIC_REPOSITORY}.git", str(checkout),
-    ]
+    git.assert_not_called()
+    assert not checkout.exists()
 
 
-def test_first_use_fetches_existing_distribution_branch(tmp_path):
-    checkout = tmp_path / "new-public"
-    with patch.object(release.subprocess, "run"):
-        with patch.object(release, "git") as git:
-            git.side_effect = [
-                "", f"{'a' * 40}\trefs/heads/{release.PUBLIC_BRANCH}", "", "",
-                str(checkout), f"https://github.com/{release.PUBLIC_REPOSITORY}.git",
-                release.PUBLIC_BRANCH, "", "a" * 40, "",
-            ]
-            release.ensure_public_checkout(checkout, tmp_path / "source")
-    assert any(
-        call.args == (checkout, "switch", "-c", release.PUBLIC_BRANCH, "FETCH_HEAD")
-        for call in git.call_args_list
+@pytest.mark.parametrize("remote", [
+    f"https://github.com/{release.PUBLIC_REPOSITORY}.git",
+    f"git@github.com:{release.PUBLIC_REPOSITORY}.git",
+    f"ssh://git@github.com/{release.PUBLIC_REPOSITORY}.git",
+])
+def test_existing_checkout_accepts_standard_public_remotes(tmp_path, remote):
+    checkout = tmp_path / "public"
+    checkout.mkdir()
+    with patch.object(release, "git") as git:
+        git.side_effect = [str(checkout), remote, release.PUBLIC_BRANCH, "", "a" * 40, ""]
+        release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert all(call.args[1] not in {"clone", "switch", "reset", "push"} for call in git.call_args_list)
+
+
+@pytest.mark.parametrize("branch", ["main", "", "other"])
+def test_wrong_or_detached_branch_is_rejected(tmp_path, branch):
+    checkout = public_checkout(tmp_path)
+    if branch:
+        release.git(checkout, "switch", "-C", branch)
+    else:
+        release.git(checkout, "switch", "--detach")
+    with pytest.raises(ValueError, match="must use branch"):
+        release.ensure_public_checkout(checkout, tmp_path / "source")
+
+
+def test_wrong_repository_is_rejected(tmp_path):
+    checkout = public_checkout(tmp_path)
+    release.git(checkout, "remote", "set-url", "origin", "https://github.com/example/private.git")
+    with pytest.raises(ValueError, match="upstream SDK repository"):
+        release.ensure_public_checkout(checkout, tmp_path / "source")
+
+
+def test_failed_fast_forward_pull_stops_before_building(tmp_path, monkeypatch, cli_source):
+    checkout = tmp_path / "public"
+    checkout.mkdir()
+    monkeypatch.setattr(sys, "argv", ["release.py", "--public-checkout", str(checkout)])
+    original_git = release.git
+
+    def git(root, *args):
+        if args[0] == "pull":
+            raise subprocess.CalledProcessError(128, ["git", "pull", "--ff-only"])
+        return original_git(root, *args)
+
+    with patch.object(release, "git", side_effect=git):
+        with patch.object(release, "build_wheel") as build:
+            with pytest.raises(subprocess.CalledProcessError):
+                release.main()
+    build.assert_not_called()
+    assert checkout.exists()
+
+
+def test_real_pull_refreshes_registry_and_leaves_only_unstaged_release_files(
+    tmp_path, monkeypatch, capsys,
+):
+    upstream = public_checkout(tmp_path)
+    remote = tmp_path / "remote.git"
+    release.git(tmp_path, "clone", "--bare", str(upstream), str(remote))
+    checkout = tmp_path / "user checkout"
+    release.git(tmp_path, "clone", "--branch", release.PUBLIC_BRANCH, str(remote), str(checkout))
+    source = tmp_path / "source"
+    source.mkdir()
+    package = source / "package"
+    version_file = package / "azure" / "ai" / "projects" / "_version.py"
+    version_file.parent.mkdir(parents=True)
+    version_file.write_text('VERSION = "2.7.0"\n')
+    release.git(source, "init", "--initial-branch=main")
+    release.git(source, "config", "user.name", "Release test")
+    release.git(source, "config", "user.email", "test@example.invalid")
+    release.git(source, "add", "--all")
+    release.git(source, "commit", "-m", "Committed SDK source")
+    registry = upstream / release.PUBLIC_PATH / "registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps(manifest_for("2.7.2b1")))
+    release.git(upstream, "add", "--", release.PUBLIC_PATH)
+    release.git(upstream, "commit", "-m", "Newer approved SDK")
+    release.git(upstream, "push", str(remote), release.PUBLIC_BRANCH)
+    remote_head = release.git(remote, f"--git-dir={remote}", "rev-parse", release.PUBLIC_BRANCH)
+    monkeypatch.setattr(release, "PACKAGE", package)
+    monkeypatch.setattr(sys, "argv", ["release.py", "--public-checkout", str(checkout)])
+    real_git = release.git
+
+    def git(root, *args):
+        if root == checkout and args == ("remote", "get-url", "origin"):
+            return f"https://github.com/{release.PUBLIC_REPOSITORY}.git"
+        return real_git(root, *args)
+
+    def build(package, version, workspace):
+        assert version == "2.7.3b1"
+        wheel = workspace / f"azure_ai_projects-{version}-py3-none-any.whl"
+        wheel.write_bytes(wheel_bytes(version))
+        return wheel
+
+    with patch.object(release, "git", side_effect=git):
+        with patch.object(release, "build_wheel", side_effect=build):
+            release.main()
+    assert real_git(checkout, "rev-parse", "HEAD") == remote_head
+    assert real_git(remote, f"--git-dir={remote}", "rev-parse", release.PUBLIC_BRANCH) == remote_head
+    assert real_git(checkout, "diff", "--cached", "--name-only") == ""
+    assert real_git(checkout, "diff", "--name-only") == f"{release.PUBLIC_PATH}/registry.json"
+    assert real_git(checkout, "ls-files", "--others", "--exclude-standard") == (
+        f"{release.PUBLIC_PATH}/wheels/2.7.3b1/azure_ai_projects-2.7.3b1-py3-none-any.whl"
     )
-
-
-def test_missing_publish_auth_fails(monkeypatch):
-    monkeypatch.delenv("GH_TOKEN", raising=False)
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    failure = subprocess.CompletedProcess([], 128, "", "No credentials")
-    with patch.object(release.subprocess, "run", return_value=failure):
-        with pytest.raises(RuntimeError, match="Publishing requires"):
-            release.github_token()
+    manifest = release.read_registry(checkout)
+    assert manifest["latest"] == "2.7.3b1"
+    assert "2.7.2b1" in manifest["versions"]
+    assert version_file.read_text() == 'VERSION = "2.7.0"\n'
+    assert "Nothing pushed." in capsys.readouterr().out
 
 
 def test_shallow_checkout_deepens_history_to_find_the_pr_base(tmp_path):
@@ -390,6 +482,8 @@ def test_advancing_upstream_main_does_not_count_as_private_pr_changes(tmp_path):
     wheel = tmp_path / f"azure_ai_projects-{VERSION}-py3-none-any.whl"
     wheel.write_bytes(wheel_bytes())
     release.prepare_release(checkout, wheel, VERSION)
+    release.git(checkout, "add", "--", release.PUBLIC_PATH)
+    release.git(checkout, "commit", "-m", "User commits the reviewed release")
     release.ensure_public_checkout(checkout, tmp_path / "private-source")
     assert set(release.public_changes(checkout)) == {
         f"{release.PUBLIC_PATH}/registry.json",
@@ -421,70 +515,6 @@ def test_real_shallow_clone_deepens_and_temporary_git_files_are_cleaned_up(tmp_p
         assert release.public_changes(checkout) == [registry_path]
         release.validate_public_paths(release.public_changes(checkout))
     assert not Path(temporary).exists()
-
-
-def test_account_selection_is_forwarded_without_exposing_credentials(monkeypatch):
-    monkeypatch.delenv("GH_TOKEN", raising=False)
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    credential = subprocess.CompletedProcess([], 0, "username=test-user\npassword=test-token\n", "")
-    with patch.object(release.subprocess, "run", return_value=credential) as run:
-        assert release.github_token("test-user") == "test-token"
-    assert run.call_args.kwargs["input"] == "protocol=https\nhost=github.com\nusername=test-user\n\n"
-    with pytest.raises(ValueError, match="username"):
-        release.github_token("user\npassword=injected")
-
-
-def test_publish_updates_existing_distribution_and_verifies_anonymous_downloads(tmp_path):
-    checkout = public_checkout(tmp_path)
-    manifest = manifest_for()
-    public = checkout / release.PUBLIC_PATH
-    public.mkdir(parents=True)
-    (public / "registry.json").write_text(json.dumps(manifest))
-    release.git(checkout, "add", "--", release.PUBLIC_PATH)
-    release.git(checkout, "commit", "-m", "Public registry")
-    real_git = release.git
-    with patch.object(release, "urlopen", return_value=io.BytesIO(json.dumps(manifest).encode())):
-        with patch.object(release, "download_wheel") as download:
-            with patch.object(release, "git", wraps=release.git) as git:
-                git.side_effect = lambda root, *args, **kwargs: "" if args[0] == "push" else real_git(root, *args, **kwargs)
-                assert release.publish(checkout, "test-token") == release.PUBLIC_PR_URL
-    download.assert_called_once()
-
-
-def test_publish_verifies_all_retained_approved_versions(tmp_path):
-    checkout = public_checkout(tmp_path)
-    manifest = manifest_for()
-    manifest["versions"].update(manifest_for("2.7.1b1")["versions"])
-    manifest["latest"] = "2.7.1b1"
-    public = checkout / release.PUBLIC_PATH
-    public.mkdir(parents=True)
-    (public / "registry.json").write_text(json.dumps(manifest))
-    release.git(checkout, "add", "--", release.PUBLIC_PATH)
-    release.git(checkout, "commit", "-m", "Public registry")
-    real_git = release.git
-    with patch.object(release, "urlopen", return_value=io.BytesIO(json.dumps(manifest).encode())):
-        with patch.object(release, "download_wheel") as download:
-            with patch.object(release, "git") as git:
-                git.side_effect = lambda root, *args, **kwargs: "" if args[0] == "push" else real_git(root, *args, **kwargs)
-                assert release.publish(checkout, "test-token") == release.PUBLIC_PR_URL
-    assert [call.args[0].version for call in download.call_args_list] == [VERSION, "2.7.1b1"]
-
-
-def test_anonymous_manifest_mismatch_stops_publication_verification(tmp_path):
-    checkout = public_checkout(tmp_path)
-    public = checkout / release.PUBLIC_PATH
-    public.mkdir(parents=True)
-    (public / "registry.json").write_text(json.dumps(manifest_for()))
-    release.git(checkout, "add", "--", release.PUBLIC_PATH)
-    release.git(checkout, "commit", "-m", "Public registry")
-    real_git = release.git
-    with patch.object(release, "urlopen", return_value=io.BytesIO(b"{}")):
-        with patch.object(release, "download_wheel") as download:
-            with patch.object(release, "git") as git:
-                git.side_effect = lambda root, *args, **kwargs: "" if args[0] == "push" else real_git(root, *args, **kwargs)
-                with pytest.raises(ValueError, match="differs"):
-                    release.publish(checkout, "test-token")
-    download.assert_not_called()
 
 
 def test_source_changes_in_public_history_are_rejected(tmp_path):

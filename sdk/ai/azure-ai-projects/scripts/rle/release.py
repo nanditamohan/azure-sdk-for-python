@@ -1,21 +1,18 @@
-"""Build and publish SDK beta wheels to the existing RLE distribution PR."""
+"""Prepare SDK beta wheels and registry changes in an existing public checkout."""
 
 from __future__ import annotations
 
 import argparse
-import base64
 from dataclasses import dataclass
 from email.parser import BytesParser
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from urllib.request import urlopen
 import zipfile
 
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
@@ -29,7 +26,6 @@ MANIFEST_URL = (
 VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+(?:b[1-9][0-9]*|\.dev[0-9]+)"
 
 PACKAGE = Path(__file__).resolve().parents[2]
-TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 
 
 @dataclass(frozen=True)
@@ -65,11 +61,11 @@ def resolve_release(manifest: object, version: str = "latest") -> Release:
         raise ValueError(f"Unexpected wheel filename for {selected}.")
     expected_url = (
         rf"https://raw\.githubusercontent\.com/{re.escape(PUBLIC_REPOSITORY)}/"
-        rf"[0-9a-f]{{40}}/{re.escape(PUBLIC_PATH)}/wheels/"
+        rf"(?:[0-9a-f]{{40}}|{re.escape(PUBLIC_BRANCH)})/{re.escape(PUBLIC_PATH)}/wheels/"
         rf"{re.escape(selected)}/{re.escape(filename)}"
     )
     if not isinstance(url, str) or not re.fullmatch(expected_url, url):
-        raise ValueError("The wheel URL must reference an immutable public SDK commit.")
+        raise ValueError("The wheel URL must reference a public SDK commit or release branch.")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("The wheel SHA-256 must contain 64 lowercase hexadecimal digits.")
     return Release(selected, filename, url, digest)
@@ -90,20 +86,6 @@ def validate_wheel(path: Path, version: str) -> None:
             raise ValueError("The wheel does not contain RLEnvironment.")
         if archive.testzip() is not None:
             raise ValueError("The wheel contains corrupt entries.")
-
-
-def download_wheel(release: Release, directory: Path) -> Path:
-    target = directory / release.filename
-    digest = hashlib.sha256()
-    with urlopen(release.url, timeout=120) as response, target.open("wb") as output:
-        while chunk := response.read(1024 * 1024):
-            digest.update(chunk)
-            output.write(chunk)
-    if digest.hexdigest() != release.sha256:
-        target.unlink()
-        raise ValueError(f"SHA-256 mismatch for SDK {release.version}; refusing publication.")
-    validate_wheel(target, release.version)
-    return target
 
 
 def read_registry(checkout: Path) -> dict | None:
@@ -137,35 +119,26 @@ def next_version(checkout: Path, base_version: str, bump: str = "patch") -> str:
     return f"{major}.{minor}.{patch}b1"
 
 
-def git(checkout: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
+def git(checkout: Path, *arguments: str) -> str:
     return subprocess.run(
         ["git", "-C", str(checkout), *arguments], check=True,
-        text=True, stdout=subprocess.PIPE, env=env,
+        text=True, stdout=subprocess.PIPE,
     ).stdout.strip()
 
 
 def ensure_public_checkout(checkout: Path, source: Path) -> None:
     if checkout == source or source in checkout.parents or checkout in source.parents:
         raise ValueError("The public checkout must be separate from the source checkout.")
-    if not checkout.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse",
-             f"https://github.com/{PUBLIC_REPOSITORY}.git", str(checkout)],
-            check=True,
-        )
-        git(checkout, "sparse-checkout", "set", PUBLIC_PATH)
-        remote_branch = git(
-            checkout, "ls-remote", "--heads", "origin", f"refs/heads/{PUBLIC_BRANCH}"
-        )
-        if remote_branch:
-            git(checkout, "fetch", "--depth=1", "origin", PUBLIC_BRANCH)
-            git(checkout, "switch", "-c", PUBLIC_BRANCH, "FETCH_HEAD")
-        else:
-            git(checkout, "switch", "-c", PUBLIC_BRANCH)
+    if not checkout.is_dir():
+        raise ValueError("Provide an existing public SDK checkout with --public-checkout.")
     if Path(git(checkout, "rev-parse", "--show-toplevel")).resolve() != checkout:
         raise ValueError("The public checkout must be a repository root.")
     origin = git(checkout, "remote", "get-url", "origin")
-    if origin.removesuffix(".git") != f"https://github.com/{PUBLIC_REPOSITORY}":
+    if origin.removesuffix(".git") not in {
+        f"https://github.com/{PUBLIC_REPOSITORY}",
+        f"git@github.com:{PUBLIC_REPOSITORY}",
+        f"ssh://git@github.com/{PUBLIC_REPOSITORY}",
+    }:
         raise ValueError("The public checkout origin must be the upstream SDK repository.")
     if git(checkout, "branch", "--show-current") != PUBLIC_BRANCH:
         raise ValueError(f"The public checkout must use branch {PUBLIC_BRANCH}.")
@@ -244,98 +217,47 @@ def prepare_release(checkout: Path, wheel: Path, version: str) -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(wheel, target)
     relative = target.relative_to(checkout).as_posix()
-    git(checkout, "add", "--", relative)
-    git(checkout, "commit", "-m", f"Package RLE SDK {version}\n\n{TRAILER}")
-    artifact_commit = git(checkout, "rev-parse", "HEAD")
     manifest["versions"][version] = {
         "filename": wheel.name,
-        "url": f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/{artifact_commit}/{relative}",
+        "url": f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/{PUBLIC_BRANCH}/{relative}",
         "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
     }
     manifest["latest"] = version
     registry_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     resolve_release(manifest)
-    git(checkout, "add", "--", f"{PUBLIC_PATH}/registry.json")
-    git(checkout, "commit", "-m", f"Distribute RLE SDK {version}\n\n{TRAILER}")
     return manifest
-
-
-def github_token(username: str | None = None) -> str:
-    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if os.environ.get(name):
-            return os.environ[name]
-    credential_request = "protocol=https\nhost=github.com\n"
-    if username is not None:
-        if not re.fullmatch(r"[A-Za-z0-9-]+", username):
-            raise ValueError("Invalid GitHub username.")
-        credential_request += f"username={username}\n"
-    result = subprocess.run(
-        ["git", "credential", "fill"], input=credential_request + "\n",
-        text=True, capture_output=True,
-    )
-    credentials = dict(
-        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
-    )
-    if result.returncode or not credentials.get("password"):
-        raise RuntimeError(
-            "Publishing requires GH_TOKEN, GITHUB_TOKEN, or GitHub Git credentials. "
-            "Use --github-user to select an account when Git has multiple accounts."
-        )
-    return credentials["password"]
-
-
-def publish(checkout: Path, token: str) -> str:
-    validate_public_paths(public_changes(checkout))
-    if git(checkout, "status", "--porcelain"):
-        raise ValueError("Refusing to publish a dirty public checkout.")
-    manifest = json.loads((checkout / PUBLIC_PATH / "registry.json").read_text(encoding="utf-8"))
-    resolve_release(manifest)
-    # Keep credentials out of subprocess arguments and the repository configuration.
-    env = os.environ.copy()
-    index = int(env.get("GIT_CONFIG_COUNT", "0"))
-    authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    env["GIT_CONFIG_COUNT"] = str(index + 1)
-    env[f"GIT_CONFIG_KEY_{index}"] = "http.https://github.com/.extraheader"
-    env[f"GIT_CONFIG_VALUE_{index}"] = f"Authorization: Basic {authorization}"
-    git(checkout, "push", "origin", f"HEAD:refs/heads/{PUBLIC_BRANCH}", env=env)
-    with urlopen(MANIFEST_URL, timeout=60) as response:
-        published = json.load(response)
-    if published != manifest:
-        raise ValueError("The anonymously downloaded public manifest differs from the release.")
-    with tempfile.TemporaryDirectory(prefix="rle-public-check-") as temporary:
-        for version in published["versions"]:
-            download_wheel(resolve_release(published, version), Path(temporary))
-    return PUBLIC_PR_URL
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--public-checkout", type=Path, required=True)
     parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
-    parser.add_argument("--github-user", help="Select an existing Git Credential Manager account")
     args = parser.parse_args()
-    token = github_token(args.github_user)
     source = Path(git(PACKAGE, "rev-parse", "--show-toplevel")).resolve()
-    with tempfile.TemporaryDirectory(prefix="rle-sdk-release-") as temporary_checkout:
-        checkout = (Path(temporary_checkout) / "public").resolve()
-        ensure_public_checkout(checkout, source)
-        if git(
-            source, "status", "--porcelain", "--untracked-files=all", "--", str(PACKAGE),
-            ":(exclude)sdk/ai/azure-ai-projects/scripts/rle",
-        ):
-            raise ValueError("Commit SDK package changes before building a release.")
-        current = (PACKAGE / "azure" / "ai" / "projects" / "_version.py").read_text(encoding="utf-8")
-        match = re.search(r'^VERSION = "([0-9]+\.[0-9]+\.[0-9]+)[^"]*"$', current, re.MULTILINE)
-        if match is None:
-            raise ValueError("Cannot determine the SDK base version.")
-        version = next_version(checkout, match[1], args.bump)
-        print(f"Building RLE SDK {version} ({args.bump} bump)...", flush=True)
-        with tempfile.TemporaryDirectory(prefix="rle-sdk-build-") as temporary:
-            wheel = build_wheel(PACKAGE, version, Path(temporary))
-            prepare_release(checkout, wheel, version)
-        pr_url = publish(checkout, token)
-        print(f"Published RLE SDK {version}. Registry latest updated to {version}.")
-        print(f"Registry: {MANIFEST_URL}")
-        print(f"PR: {pr_url}")
+    checkout = args.public_checkout.resolve()
+    ensure_public_checkout(checkout, source)
+    if git(
+        source, "status", "--porcelain", "--untracked-files=all", "--", str(PACKAGE),
+        ":(exclude)sdk/ai/azure-ai-projects/scripts/rle",
+    ):
+        raise ValueError("Commit SDK package changes before building a release.")
+    print(f"Refreshing public branch {PUBLIC_BRANCH}...", flush=True)
+    git(checkout, "pull", "--ff-only", "origin", PUBLIC_BRANCH)
+    ensure_public_checkout(checkout, source)
+    current = (PACKAGE / "azure" / "ai" / "projects" / "_version.py").read_text(encoding="utf-8")
+    match = re.search(r'^VERSION = "([0-9]+\.[0-9]+\.[0-9]+)[^"]*"$', current, re.MULTILINE)
+    if match is None:
+        raise ValueError("Cannot determine the SDK base version.")
+    version = next_version(checkout, match[1], args.bump)
+    print(f"Building RLE SDK {version} ({args.bump} bump)...", flush=True)
+    with tempfile.TemporaryDirectory(prefix="rle-sdk-build-") as temporary:
+        wheel = build_wheel(PACKAGE, version, Path(temporary))
+        prepare_release(checkout, wheel, version)
+    print(f"Prepared RLE SDK {version}. Registry latest updated locally to {version}. Nothing pushed.")
+    print(f"Unstaged changes: {checkout / PUBLIC_PATH}")
+    print("Review/test the wheel, then commit and push both the wheel and registry manually.")
+    print(f"Public registry (after push): {MANIFEST_URL}")
+    print(f"PR: {PUBLIC_PR_URL}")
 
 
 if __name__ == "__main__":
