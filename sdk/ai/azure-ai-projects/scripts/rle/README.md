@@ -5,19 +5,20 @@ Build SDK wheels and publish the version registry to
 Prerequisites: Python with `build`, Git, committed SDK changes and public-branch
 write access. Test SDK changes before releasing.
 
-From the source repository root:
+From the source repository root, enter this scripts folder and run:
 
 ```powershell
-$release = "sdk\ai\azure-ai-projects\scripts\rle\release.py"
-python $release               # Patch (default): 2.7.1b1
-python $release --bump minor  # Or minor: 2.8.0b1
-python $release --bump major  # Or major: 3.0.0b1
+cd sdk\ai\azure-ai-projects\scripts\rle
+python release.py               # Patch (default): 2.7.1b1
+python release.py --bump minor  # Or minor: 2.8.0b1
+python release.py --bump major  # Or major: 3.0.0b1
 ```
 
 Versioning bumps the highest core version in the SDK or registry, using a `b1`
 suffix. Every invocation clones the public PR's release branch into a temporary folder,
 builds the wheel, commits the wheel and registry, and pushes to update the PR.
-The temporary folder is removed on success or failure; no separate checkout is needed.
+The temporary folder is removed on success or failure; no manual public checkout is needed.
+The push updates the public PR's branch, not `main`; merging the PR is separate.
 On success, the script prints the published version, registry URL, and PR link.
 
 Authentication uses `GH_TOKEN`, `GITHUB_TOKEN`, or Git credentials; add
