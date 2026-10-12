@@ -213,7 +213,7 @@ def cli_source(tmp_path, monkeypatch):
 @pytest.mark.parametrize("bump", ["", "beta", "dev", VERSION])
 def test_cli_rejects_invalid_bumps_before_building(tmp_path, monkeypatch, cli_source, bump):
     monkeypatch.setattr(sys, "argv", [
-        "release.py", "--public-checkout", str(tmp_path / "public"), "--bump", bump,
+        "release.py", "--public-repo", str(tmp_path / "public"), "--bump", bump,
     ])
     with patch.object(release, "build_wheel") as build:
         with pytest.raises(SystemExit) as error:
@@ -230,7 +230,7 @@ def test_cli_builds_patch_by_default_or_the_selected_bump(
 ):
     checkout = tmp_path / "public"
     checkout.mkdir()
-    arguments = ["release.py", "--public-checkout", str(checkout)]
+    arguments = ["release.py", "--public-repo", str(checkout)]
     if bump is not None:
         arguments.extend(["--bump", bump])
     monkeypatch.setattr(sys, "argv", arguments)
@@ -252,9 +252,12 @@ def test_cli_builds_patch_by_default_or_the_selected_bump(
     assert all(call.args[1] not in {"push", "commit", "add", "clone"} for call in git.call_args_list)
     assert checkout.exists()
     output = capsys.readouterr().out
-    assert f"Prepared RLE SDK {expected}. Registry latest updated locally to {expected}. Nothing pushed." in output
-    assert f"Public registry (after push): {release.MANIFEST_URL}" in output
-    assert f"PR: {release.PUBLIC_PR_URL}" in output
+    assert output.splitlines() == [
+        f"Refreshing public branch {release.PUBLIC_BRANCH}...",
+        f"Building RLE SDK {expected} ({bump or 'patch'} bump)...",
+        "Review/test the wheel, then commit and push both the wheel and registry "
+        f"manually from {checkout.resolve()}.",
+    ]
 
 
 @pytest.mark.parametrize("failure", [
@@ -267,7 +270,7 @@ def test_user_checkout_is_retained_when_release_fails(
     checkout.mkdir()
     marker = checkout / "retained.txt"
     marker.write_text("Keep this checkout.\n")
-    monkeypatch.setattr(sys, "argv", ["release.py", "--public-checkout", str(checkout)])
+    monkeypatch.setattr(sys, "argv", ["release.py", "--public-repo", str(checkout)])
     with (
         patch.object(release, "ensure_public_checkout") as ensure,
         patch.object(release, "build_wheel", return_value=tmp_path / "sdk.whl") as build,
@@ -278,13 +281,13 @@ def test_user_checkout_is_retained_when_release_fails(
         with pytest.raises(ValueError, match="Release failed"):
             release.main()
     assert marker.read_text() == "Keep this checkout.\n"
-    assert "Prepared RLE SDK" not in capsys.readouterr().out
+    assert "Review/test the wheel" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("option", ["--publish", "--publish-only", "--github-user"])
 def test_cli_rejects_removed_workflows(tmp_path, monkeypatch, option):
     monkeypatch.setattr(sys, "argv", [
-        "release.py", "--public-checkout", str(tmp_path / "public"), option,
+        "release.py", "--public-repo", str(tmp_path / "public"), option,
     ])
     with patch.object(release, "build_wheel") as build:
         with pytest.raises(SystemExit) as error:
@@ -299,6 +302,19 @@ def test_cli_requires_an_explicit_public_checkout(monkeypatch):
         with pytest.raises(SystemExit) as error:
             release.main()
     assert error.value.code == 2
+    git.assert_not_called()
+
+
+def test_cli_rejects_previous_public_checkout_option(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "release.py", "--public-repo", str(tmp_path / "public"),
+        "--public-checkout", str(tmp_path / "public"),
+    ])
+    with patch.object(release, "git") as git:
+        with pytest.raises(SystemExit) as error:
+            release.main()
+    assert error.value.code == 2
+    assert "unrecognized arguments: --public-checkout" in capsys.readouterr().err
     git.assert_not_called()
 
 
@@ -393,33 +409,180 @@ def test_existing_checkout_accepts_standard_public_remotes(tmp_path, remote):
     checkout = tmp_path / "public"
     checkout.mkdir()
     with patch.object(release, "git") as git:
-        git.side_effect = [str(checkout), remote, release.PUBLIC_BRANCH, "", "", "a" * 40, ""]
+        git.side_effect = [str(checkout), remote, "", release.PUBLIC_BRANCH, "", "a" * 40, ""]
         release.ensure_public_checkout(checkout, tmp_path / "source")
     assert all(call.args[1] not in {"clone", "switch", "reset", "push"} for call in git.call_args_list)
 
 
-@pytest.mark.parametrize("branch", ["main", "", "other"])
-def test_wrong_or_detached_branch_is_rejected(tmp_path, branch):
+def test_already_on_release_branch_does_not_fetch_it_or_switch(tmp_path):
     checkout = public_checkout(tmp_path)
-    if branch:
-        release.git(checkout, "switch", "-C", branch)
-    else:
-        release.git(checkout, "switch", "--detach")
-    with pytest.raises(ValueError, match="must use branch"):
+    original_refs = release.git(checkout, "show-ref", "--heads")
+    with patch.object(release, "git", wraps=release.git) as calls:
         release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert all(call.args[1] not in {"switch", "reset", "push"} for call in calls.call_args_list)
+    assert all(
+        call.args[-1] == "+refs/heads/main:refs/remotes/origin/main"
+        for call in calls.call_args_list if call.args[1] == "fetch"
+    )
+    assert release.git(checkout, "show-ref", "--heads") == original_refs
+    assert release.git(checkout, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("branch", ["main", "other"])
+def test_clean_checkout_switches_to_existing_release_branch_without_resetting(tmp_path, branch):
+    checkout = public_checkout(tmp_path)
+    release_head = release.git(checkout, "rev-parse", release.PUBLIC_BRANCH)
+    release.git(checkout, "switch", "-C", branch)
+    original_head = release.git(checkout, "rev-parse", "HEAD")
+    original_branches = release.git(checkout, "for-each-ref", "--format=%(refname)", "refs/heads")
+    release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert release.git(checkout, "branch", "--show-current") == release.PUBLIC_BRANCH
+    assert release.git(checkout, "rev-parse", "HEAD") == release_head
+    assert release.git(checkout, "rev-parse", branch) == original_head
+    assert release.git(checkout, "for-each-ref", "--format=%(refname)", "refs/heads") == original_branches
+    assert release.git(checkout, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("state", ["modified", "staged", "untracked"])
+def test_dirty_other_branch_is_rejected_without_fetching_or_switching(tmp_path, state):
+    checkout = public_checkout(tmp_path)
+    release.git(checkout, "switch", "main")
+    path = checkout / ("untracked.txt" if state == "untracked" else "baseline.txt")
+    path.write_text("Keep my local changes.\n")
+    if state == "staged":
+        release.git(checkout, "add", path.name)
+    original_status = release.git(checkout, "status", "--porcelain")
+    with patch.object(release, "git", wraps=release.git) as git:
+        with pytest.raises(ValueError, match="clean"):
+            release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert all(call.args[1] not in {"fetch", "switch", "reset"} for call in git.call_args_list)
+    assert release.git(checkout, "branch", "--show-current") == "main"
+    assert release.git(checkout, "status", "--porcelain") == original_status
+    assert path.read_text() == "Keep my local changes.\n"
+
+
+def test_detached_checkout_is_rejected_without_switching(tmp_path):
+    checkout = public_checkout(tmp_path)
+    release.git(checkout, "switch", "--detach")
+    original_head = release.git(checkout, "rev-parse", "HEAD")
+    with pytest.raises(ValueError, match="detached HEAD"):
+        release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert release.git(checkout, "branch", "--show-current") == ""
+    assert release.git(checkout, "rev-parse", "HEAD") == original_head
+
+
+@pytest.mark.parametrize("cached_remote_ref", [False, True])
+def test_remote_only_release_branch_is_fetched_and_checked_out_locally(tmp_path, cached_remote_ref):
+    upstream = public_checkout(tmp_path)
+    registry = upstream / release.PUBLIC_PATH / "registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps(manifest_for()))
+    release.git(upstream, "add", "--", release.PUBLIC_PATH)
+    release.git(upstream, "commit", "-m", "Public release")
+    remote_head = release.git(upstream, "rev-parse", "HEAD")
+    checkout = tmp_path / "user checkout"
+    release.git(
+        tmp_path, "clone", "--single-branch", "--branch", "main",
+        upstream.as_uri(), str(checkout),
+    )
+    if cached_remote_ref:
+        release.git(
+            checkout, "update-ref", f"refs/remotes/origin/{release.PUBLIC_BRANCH}",
+            release.git(checkout, "rev-parse", "HEAD"),
+        )
+    original_head = release.git(checkout, "rev-parse", "HEAD")
+    original_remote_refs = release.git(upstream, "show-ref", "--heads")
+    real_git = release.git
+
+    def git(root, *args):
+        if root == checkout and args == ("remote", "get-url", "origin"):
+            return f"https://github.com/{release.PUBLIC_REPOSITORY}.git"
+        return real_git(root, *args)
+
+    with patch.object(release, "git", side_effect=git) as calls:
+        release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert any(call.args == (
+        checkout, "fetch", "origin",
+        f"+refs/heads/{release.PUBLIC_BRANCH}:refs/remotes/origin/{release.PUBLIC_BRANCH}",
+    ) for call in calls.call_args_list)
+    assert all(call.args[1] not in {"reset", "push"} for call in calls.call_args_list)
+    assert release.git(checkout, "branch", "--show-current") == release.PUBLIC_BRANCH
+    assert release.git(checkout, "rev-parse", "HEAD") == remote_head
+    assert release.git(checkout, "rev-parse", "main") == original_head
+    assert release.git(checkout, "config", f"branch.{release.PUBLIC_BRANCH}.remote") == "origin"
+    assert release.git(checkout, "config", f"branch.{release.PUBLIC_BRANCH}.merge") == (
+        f"refs/heads/{release.PUBLIC_BRANCH}"
+    )
+    assert release.git(checkout, "rev-parse", "--symbolic-full-name", "@{upstream}") == (
+        f"refs/remotes/origin/{release.PUBLIC_BRANCH}"
+    )
+    assert release.git(upstream, "show-ref", "--heads") == original_remote_refs
+    assert release.git(checkout, "rev-parse", f"origin/{release.PUBLIC_BRANCH}") == remote_head
+    assert release.git(checkout, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("local_branch_exists", [False, True])
+def test_absent_remote_release_branch_is_not_created(tmp_path, local_branch_exists):
+    upstream = public_checkout(tmp_path)
+    release.git(upstream, "switch", "main")
+    release.git(upstream, "branch", "--delete", release.PUBLIC_BRANCH)
+    checkout = tmp_path / "user checkout"
+    release.git(tmp_path, "clone", "--branch", "main", upstream.as_uri(), str(checkout))
+    if local_branch_exists:
+        release.git(checkout, "branch", release.PUBLIC_BRANCH)
+    original_refs = release.git(checkout, "show-ref")
+    original_remote_refs = release.git(upstream, "show-ref")
+    real_git = release.git
+
+    def git(root, *args):
+        if root == checkout and args == ("remote", "get-url", "origin"):
+            return f"https://github.com/{release.PUBLIC_REPOSITORY}.git"
+        return real_git(root, *args)
+
+    with patch.object(release, "git", side_effect=git) as calls:
+        with pytest.raises(subprocess.CalledProcessError):
+            release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert all(call.args[1] not in {"switch", "reset", "push"} for call in calls.call_args_list)
+    assert release.git(checkout, "branch", "--show-current") == "main"
+    assert release.git(checkout, "show-ref") == original_refs
+    assert release.git(upstream, "show-ref") == original_remote_refs
+    assert release.git(checkout, "status", "--porcelain") == ""
+
+
+def test_switching_does_not_overwrite_conflicting_ignored_files(tmp_path):
+    checkout = public_checkout(tmp_path)
+    relative = f"{release.PUBLIC_PATH}/registry.json"
+    path = checkout / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(manifest_for()))
+    release.git(checkout, "add", relative)
+    release.git(checkout, "commit", "-m", "Public registry")
+    release.git(checkout, "switch", "main")
+    (checkout / ".git" / "info" / "exclude").write_text(relative + "\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Keep my ignored local file.\n")
+    assert release.git(checkout, "status", "--porcelain") == ""
+    with pytest.raises(subprocess.CalledProcessError):
+        release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert release.git(checkout, "branch", "--show-current") == "main"
+    assert path.read_text() == "Keep my ignored local file.\n"
 
 
 def test_wrong_repository_is_rejected(tmp_path):
     checkout = public_checkout(tmp_path)
+    release.git(checkout, "switch", "main")
     release.git(checkout, "remote", "set-url", "origin", "https://github.com/example/private.git")
-    with pytest.raises(ValueError, match="upstream SDK repository"):
-        release.ensure_public_checkout(checkout, tmp_path / "source")
+    with patch.object(release, "git", wraps=release.git) as git:
+        with pytest.raises(ValueError, match="upstream SDK repository"):
+            release.ensure_public_checkout(checkout, tmp_path / "source")
+    assert all(call.args[1] not in {"fetch", "switch", "reset"} for call in git.call_args_list)
+    assert release.git(checkout, "branch", "--show-current") == "main"
 
 
 def test_failed_fast_forward_pull_stops_before_building(tmp_path, monkeypatch, cli_source):
     checkout = tmp_path / "public"
     checkout.mkdir()
-    monkeypatch.setattr(sys, "argv", ["release.py", "--public-checkout", str(checkout)])
+    monkeypatch.setattr(sys, "argv", ["release.py", "--public-repo", str(checkout)])
     original_git = release.git
 
     def git(root, *args):
@@ -435,14 +598,15 @@ def test_failed_fast_forward_pull_stops_before_building(tmp_path, monkeypatch, c
     assert checkout.exists()
 
 
+@pytest.mark.parametrize("initial_branch", ["main", release.PUBLIC_BRANCH])
 def test_real_pull_refreshes_registry_and_leaves_only_unstaged_release_files(
-    tmp_path, monkeypatch, capsys,
+    tmp_path, monkeypatch, capsys, initial_branch,
 ):
     upstream = public_checkout(tmp_path)
     remote = tmp_path / "remote.git"
     release.git(tmp_path, "clone", "--bare", str(upstream), str(remote))
     checkout = tmp_path / "user checkout"
-    release.git(tmp_path, "clone", "--branch", release.PUBLIC_BRANCH, str(remote), str(checkout))
+    release.git(tmp_path, "clone", "--branch", initial_branch, str(remote), str(checkout))
     source = tmp_path / "source"
     source.mkdir()
     package = source / "package"
@@ -462,7 +626,7 @@ def test_real_pull_refreshes_registry_and_leaves_only_unstaged_release_files(
     release.git(upstream, "push", str(remote), release.PUBLIC_BRANCH)
     remote_head = release.git(remote, f"--git-dir={remote}", "rev-parse", release.PUBLIC_BRANCH)
     monkeypatch.setattr(release, "PACKAGE", package)
-    monkeypatch.setattr(sys, "argv", ["release.py", "--public-checkout", str(checkout)])
+    monkeypatch.setattr(sys, "argv", ["release.py", "--public-repo", str(checkout)])
     real_git = release.git
 
     def git(root, *args):
@@ -480,6 +644,7 @@ def test_real_pull_refreshes_registry_and_leaves_only_unstaged_release_files(
         with patch.object(release, "build_wheel", side_effect=build):
             release.main()
     assert real_git(checkout, "rev-parse", "HEAD") == remote_head
+    assert real_git(checkout, "branch", "--show-current") == release.PUBLIC_BRANCH
     assert real_git(remote, f"--git-dir={remote}", "rev-parse", release.PUBLIC_BRANCH) == remote_head
     assert real_git(checkout, "diff", "--cached", "--name-only") == ""
     assert real_git(checkout, "diff", "--name-only") == f"{release.PUBLIC_PATH}/registry.json"
@@ -490,7 +655,10 @@ def test_real_pull_refreshes_registry_and_leaves_only_unstaged_release_files(
     assert manifest["latest"] == "2.7.3b1"
     assert "2.7.2b1" in manifest["versions"]
     assert version_file.read_text() == 'VERSION = "2.7.0"\n'
-    assert "Nothing pushed." in capsys.readouterr().out
+    assert capsys.readouterr().out.endswith(
+        "Review/test the wheel, then commit and push both the wheel and registry "
+        f"manually from {checkout.resolve()}.\n"
+    )
 
 
 def test_shallow_checkout_deepens_history_to_find_the_pr_base(tmp_path):

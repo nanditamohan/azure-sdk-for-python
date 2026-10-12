@@ -18,11 +18,6 @@ import zipfile
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
 PUBLIC_BRANCH = "rle-releases"
 PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle"
-PUBLIC_PR_URL = f"https://github.com/{PUBLIC_REPOSITORY}/pull/49488"
-MANIFEST_URL = (
-    f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/"
-    f"{PUBLIC_BRANCH}/{PUBLIC_PATH}/registry.json"
-)
 VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+(?:b[1-9][0-9]*|\.dev[0-9]+)"
 
 PACKAGE = Path(__file__).resolve().parents[2]
@@ -130,7 +125,7 @@ def ensure_public_checkout(checkout: Path, source: Path) -> None:
     if checkout == source or source in checkout.parents or checkout in source.parents:
         raise ValueError("The public checkout must be separate from the source checkout.")
     if not checkout.is_dir():
-        raise ValueError("Provide an existing public SDK checkout with --public-checkout.")
+        raise ValueError("Provide an existing public SDK checkout with --public-repo.")
     if Path(git(checkout, "rev-parse", "--show-toplevel")).resolve() != checkout:
         raise ValueError("The public checkout must be a repository root.")
     origin = git(checkout, "remote", "get-url", "origin")
@@ -140,10 +135,26 @@ def ensure_public_checkout(checkout: Path, source: Path) -> None:
         f"ssh://git@github.com/{PUBLIC_REPOSITORY}",
     }:
         raise ValueError("The public checkout origin must be the upstream SDK repository.")
-    if git(checkout, "branch", "--show-current") != PUBLIC_BRANCH:
-        raise ValueError(f"The public checkout must use branch {PUBLIC_BRANCH}.")
     if git(checkout, "status", "--porcelain"):
         raise ValueError("The public checkout must be clean before release preparation.")
+    branch = git(checkout, "branch", "--show-current")
+    if not branch:
+        raise ValueError("The public checkout must not be in detached HEAD state.")
+    if branch != PUBLIC_BRANCH:
+        print(f"Fetching existing public branch {PUBLIC_BRANCH}...", flush=True)
+        git(
+            checkout, "fetch", "origin",
+            f"+refs/heads/{PUBLIC_BRANCH}:refs/remotes/origin/{PUBLIC_BRANCH}",
+        )
+        print(f"Switching public checkout to {PUBLIC_BRANCH}...", flush=True)
+        if git(checkout, "branch", "--list", PUBLIC_BRANCH):
+            git(checkout, "switch", "--no-guess", "--no-overwrite-ignore", PUBLIC_BRANCH)
+        else:
+            git(checkout, "remote", "set-branches", "--add", "origin", PUBLIC_BRANCH)
+            git(
+                checkout, "switch", "--no-overwrite-ignore", "--create", PUBLIC_BRANCH,
+                "--track", f"origin/{PUBLIC_BRANCH}",
+            )
     validate_public_paths(public_changes(checkout))
 
 
@@ -238,11 +249,11 @@ def prepare_release(checkout: Path, wheel: Path, version: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--public-checkout", type=Path, required=True)
+    parser.add_argument("--public-repo", type=Path, required=True)
     parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
     args = parser.parse_args()
     source = Path(git(PACKAGE, "rev-parse", "--show-toplevel")).resolve()
-    checkout = args.public_checkout.resolve()
+    checkout = args.public_repo.resolve()
     ensure_public_checkout(checkout, source)
     if git(
         source, "status", "--porcelain", "--untracked-files=all", "--", str(PACKAGE),
@@ -261,11 +272,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="rle-sdk-build-") as temporary:
         wheel = build_wheel(PACKAGE, version, Path(temporary))
         prepare_release(checkout, wheel, version)
-    print(f"Prepared RLE SDK {version}. Registry latest updated locally to {version}. Nothing pushed.")
-    print(f"Unstaged changes: {checkout / PUBLIC_PATH}")
-    print("Review/test the wheel, then commit and push both the wheel and registry manually.")
-    print(f"Public registry (after push): {MANIFEST_URL}")
-    print(f"PR: {PUBLIC_PR_URL}")
+    print(
+        "Review/test the wheel, then commit and push both the wheel and registry "
+        f"manually from {checkout}."
+    )
 
 
 if __name__ == "__main__":
