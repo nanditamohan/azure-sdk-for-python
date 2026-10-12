@@ -308,19 +308,58 @@ def publish(checkout: Path, token: str) -> str:
     pull = github_api(token, f"repos/{PUBLIC_REPOSITORY}/pulls", {
         "title": "Distribute external RLE SDK wheels and registry",
         "head": PUBLIC_BRANCH, "base": "main", "draft": True,
-        "body": (
-            "## External RLE SDK preview distribution\n\n"
-            "This long-lived draft PR contains only packaged SDK wheels and a public JSON "
-            "manifest. Release tooling stays in the source fork and consumer installers "
-            "stay in the samples. No SDK implementation source changes or private "
-            "repository references are included.\n\n"
-            f"Registry: {MANIFEST_URL}\n\n"
-            "Wheel URLs are pinned to artifact commits and verified with SHA-256. "
-            "Container builds support latest and exact versions without source access. "
-            "Future releases reuse this branch and PR, preserving previous versions. "
-            "Please retain the branch while customers use this preview distribution.\n\n"
-            "The manifest and all wheel downloads were verified anonymously before PR creation."
-        ),
+        "body": f"""## Use the RLE SDK (private preview)
+
+The SDK is installed inside your environment container. No local SDK installation
+or SDK configuration is required in the azd CLI.
+
+Prerequisites: Docker with BuildKit supporting Git-source ADD and ADD --checksum,
+and an updated sample Dockerfile from sujit-kamireddy/rle-samples#77.
+For RLE CLI setup, see Azure/azure-dev#10423.
+
+### Build with the latest preview
+
+The sample Dockerfiles default to:
+
+```dockerfile
+ENV AZURE_AI_PROJECTS_RLE_VERSION=latest
+```
+
+Run from the sample's Docker build directory:
+
+```powershell
+docker build -t rle-environment .
+```
+
+### Verify
+
+```powershell
+docker run --rm rle-environment python -c "from importlib.metadata import version; print(version('azure-ai-projects'))"
+```
+
+### Pin a version
+
+For reproducible builds, edit the SDK ENV line in your local Dockerfile before rebuilding:
+
+```dockerfile
+ENV AZURE_AI_PROJECTS_RLE_VERSION={manifest['latest']}
+```
+
+Choose an exact version from the [public registry]({MANIFEST_URL}).
+An unavailable version fails the build; it never falls back to latest.
+New previews use beta versions; existing .dev version pins remain available.
+
+### Update
+
+Set the Dockerfile ENV line back to latest and rebuild with the same command.
+New approved releases are picked up on rebuild without requiring --no-cache.
+Existing images and running containers are not upgraded automatically, and
+explicitly pinned versions remain pinned.
+
+The public registry and wheels require no GitHub credentials. Wheel downloads
+use immutable commit URLs and SHA-256 verification. This PR contains only the
+registry and wheels; retain the distribution branch while customers use it.
+""",
     })
     if not isinstance(pull, dict) or not isinstance(pull.get("html_url"), str):
         raise ValueError("GitHub did not return a PR URL.")

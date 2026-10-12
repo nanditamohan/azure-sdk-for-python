@@ -3,18 +3,19 @@
 The public distribution contains only packaged `azure-ai-projects` wheels and a
 [`registry.json`](https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-external-releases/sdk/ai/azure-ai-projects/rle-external/registry.json)
 manifest. Release tooling, its validation helpers and this documentation stay in the
-source fork; consumer installers live only in the RLE samples. Reading
+source fork; the shared consumer installer lives only in the RLE samples repository. Reading
 the public manifest and downloading wheels requires no source repository
 access or credentials. Wheels contain Python code: publishing them is public
 distribution of the implementation, not a way to keep shipped code confidential.
 
 ## Install
 
-Run the standalone installer included in your RLE sample's Docker build directory:
+From the root of an RLE samples repository checkout, run its
+[shared installer](https://github.com/sujit-kamireddy/rle-samples/blob/9f6bf807e8ce8b3dc6d07daa574066075f59dc15/tools/install_rle_sdk.py):
 
 ```powershell
-python install_rle_sdk.py
-python install_rle_sdk.py --version 2.7.0b1
+python tools\install_rle_sdk.py
+python tools\install_rle_sdk.py --version 2.7.0b1
 ```
 
 The example version is illustrative; use a version listed in the registry.
@@ -46,6 +47,11 @@ installation, with a Git-source-ADD-capable builder such as Docker with BuildKit
 ```dockerfile
 ADD https://github.com/Azure/azure-sdk-for-python.git#rle-external-releases:sdk/ai/azure-ai-projects/rle-external /app/rle-sdk-dist/
 ```
+
+Sample Dockerfiles fetch the shared consumer installer from an immutable public
+samples-repository commit with `ADD --checksum`. No installer copy lives in this
+fork or in the individual sample directories. This keeps sample-only build
+contexts working without CLI changes; use a builder supporting checksum ADD.
 
 The builder resolves the public branch commit and scopes the image contents to
 this subdirectory; no Git installation is needed in the runtime image. New
