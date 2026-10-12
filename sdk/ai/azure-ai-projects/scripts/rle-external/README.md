@@ -2,20 +2,19 @@
 
 The public distribution contains only packaged `azure-ai-projects` wheels and a
 [`registry.json`](https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-external-releases/sdk/ai/azure-ai-projects/rle-external/registry.json)
-manifest. Release scripts, the installer and this documentation stay in the
-source fork; standalone installer copies also ship in the RLE samples. Reading
+manifest. Release tooling, its validation helpers and this documentation stay in the
+source fork; consumer installers live only in the RLE samples. Reading
 the public manifest and downloading wheels requires no source repository
 access or credentials. Wheels contain Python code: publishing them is public
 distribution of the implementation, not a way to keep shipped code confidential.
 
 ## Install
 
-Use [`install_rle_sdk.py`](./install_rle_sdk.py) from this source checkout or the
-standalone copy included in your RLE sample, then run:
+Run the standalone installer included in your RLE sample's Docker build directory:
 
 ```powershell
 python install_rle_sdk.py
-python install_rle_sdk.py --version 2.7.0.dev20261012000000
+python install_rle_sdk.py --version 2.7.0b1
 ```
 
 The example version is illustrative; use a version listed in the registry.
@@ -32,8 +31,10 @@ that index. `--requirements` installs other requirements in the same transaction
 The manifest is a JSON object with `schema_version: 1`, `package:
 "azure-ai-projects"`, `channel: "rle-external"`, `latest`, and `versions`. Each
 version maps to a wheel `filename`, immutable commit-pinned public `url`, and
-lowercase hexadecimal `sha256`. Only universal `py3-none-any` wheels with unique
-`MAJOR.MINOR.PATCH.devNUMBER` versions are supported. `latest` means the most
+lowercase hexadecimal `sha256`. New universal `py3-none-any` wheels use unique
+`MAJOR.MINOR.PATCHbNUMBER` beta versions. Previously published timestamped `.dev`
+versions remain valid and their artifacts and registry entries are preserved.
+`latest` means the most
 recent deliberately published RLE build, not the latest package on PyPI.
 Existing version entries and artifacts must never be overwritten.
 
@@ -82,8 +83,15 @@ python sdk\ai\azure-ai-projects\scripts\rle-external\release.py `
 ```
 
 Use `--publish` to build and publish in one invocation, and `--version` to choose
-an explicit unique development version. Otherwise a UTC timestamp is appended to
-the SDK base version. The source package version is never modified in place.
+an explicit unique beta version, such as `2.7.0b1`. Otherwise the script selects
+the next beta number for the SDK base version from the public checkout's registry:
+`2.7.0b1`, `2.7.0b2`, and so on. Refresh an existing public checkout before
+preparing a release so numbering includes all published versions. Python
+normalizes literal `preview` version labels to release candidates, so beta
+notation is used instead. New `.dev` releases are no longer accepted by the CLI.
+The source package version is never modified in place. Validate the prepared wheel
+and sample builds before publishing; only deliberately approved releases should
+advance `latest`.
 
 The public checkout is separate from the source checkout and based on upstream
 `main`. First use creates it automatically. Only wheel artifacts and the JSON
