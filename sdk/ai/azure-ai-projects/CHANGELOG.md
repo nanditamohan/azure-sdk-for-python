@@ -11,6 +11,8 @@
 * Added `azure.ai.projects.rle.environments.create_app`, an OpenEnv-compatible factory that installs request-scoped MCP session routing. The `rle_session_id` endpoint query value overrides body session routing for tool listing and calls without changing requests that omit it.
 * Added an optional `rollout_graph` field to `GradeAction`, carrying the sanitized rollout graph (turns, tool calls, and tool-call parse errors) for rollout targets that supply one.
 
+* Added `RLEFoundryPolicy`, which lets `rle.execute_rollout()` sample a model deployment in the project for eval instead of a Loom checkpoint. It needs only `model_name` and `project_endpoint`, uses the client's own credential, and returns a text-level, non-trainable result. Use `RLELoomPolicy` for training.
+
 ### Dependency update
 
 * Added the optional `rle` dependency group, which installs OpenEnv 0.6 and FastMCP 3 for authoring Foundry RLE environments.

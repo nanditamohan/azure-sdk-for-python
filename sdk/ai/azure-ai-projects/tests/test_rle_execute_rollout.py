@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import RLELoomPolicy, RLESamplingOptions
+from azure.ai.projects.models import RLEFoundryPolicy, RLELoomPolicy, RLESamplingOptions
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
@@ -370,3 +370,35 @@ def test_a_serialised_policy_deserialises_back_to_its_concrete_type():
     assert isinstance(received.policy, RLELoomPolicy)
     assert received.policy.session_id == "session-1"
     assert received.policy.sequence_id == 3
+
+
+# --------------------------------------------------------------------------------------
+# Foundry policy
+
+
+def _foundry_policy() -> RLEFoundryPolicy:
+    return RLEFoundryPolicy(
+        model_name="gpt-5-mini",
+        project_endpoint="https://acct.services.ai.azure.com/api/projects/proj",
+    )
+
+
+def test_a_foundry_policy_serialises_with_no_loom_fields():
+    """A deployment has no weights to pin, so the service rejects session and checkpoint ids."""
+    body = build_rollout_body(task={}, policy=_foundry_policy())
+
+    assert body.as_dict()["policy"] == {
+        "type": "foundry",
+        "model_name": "gpt-5-mini",
+        "project_endpoint": "https://acct.services.ai.azure.com/api/projects/proj",
+    }
+
+
+def test_a_serialised_foundry_policy_deserialises_back_to_its_concrete_type():
+    from azure.ai.projects.models import RLERolloutRequest
+
+    sent = build_rollout_body(task={"seed": 0}, policy=_foundry_policy())
+    received = RLERolloutRequest(sent.as_dict())
+
+    assert isinstance(received.policy, RLEFoundryPolicy)
+    assert received.policy.model_name == "gpt-5-mini"

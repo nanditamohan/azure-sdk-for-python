@@ -1347,10 +1347,12 @@ class RLEOperations:
          environment's reset. Required.
         :paramtype task: any
         :keyword policy: Where this rollout's weights come from, and which backend resolves them.
-         Required. :class:`~azure.ai.projects.models.RLELoomPolicy` is the only kind today.
+         Required. Use :class:`~azure.ai.projects.models.RLELoomPolicy` to sample a Loom
+         checkpoint, which returns a trainable graph, or :class:`~azure.ai.projects.models.RLEFoundryPolicy`
+         to sample a model deployment in the project for eval only, which returns none.
         :paramtype policy: ~azure.ai.projects.models.RLERolloutPolicy
         :keyword sampling: How completions are sampled and rendered. Optional; the service picks a
-         compatible renderer when omitted.
+         compatible renderer when omitted. Not accepted with a Foundry policy.
         :paramtype sampling: ~azure.ai.projects.models.RLESamplingOptions or None
         :keyword rollout_id: Caller-supplied identifier, reserved within the project and returned
          unchanged. A bare-hex UUID is generated when omitted.
