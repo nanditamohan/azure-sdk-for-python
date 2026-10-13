@@ -26,7 +26,7 @@ from .._utils.model_base import Model as _Model, rest_discriminator, rest_field
 __all__ = [
     "RLERolloutPolicy",
     "RLELoomPolicy",
-    "RLEFoundryPolicy",
+    "RLEFoundryDeploymentPolicy",
     "RLESamplingOptions",
     "RLERolloutRequest",
     "RLERolloutResult",
@@ -114,7 +114,7 @@ class RLELoomPolicy(RLERolloutPolicy, discriminator="loom"):
         super().__init__(*args, type="loom", **kwargs)
 
 
-class RLEFoundryPolicy(RLERolloutPolicy, discriminator="foundry"):
+class RLEFoundryDeploymentPolicy(RLERolloutPolicy, discriminator="foundry"):
     """A model deployment in the caller's Foundry project, sampled by name.
 
     Unlike :class:`RLELoomPolicy` there are no weights to pin, so there is no session, checkpoint
@@ -127,21 +127,21 @@ class RLEFoundryPolicy(RLERolloutPolicy, discriminator="foundry"):
 
     :ivar type: Always ``"foundry"``. Required.
     :vartype type: str
-    :ivar model_name: Name of the model deployment in the project. Required.
-    :vartype model_name: str
+    :ivar deployment_name: Name of the model deployment in the project. Required.
+    :vartype deployment_name: str
     :ivar project_endpoint: Foundry project endpoint that hosts the deployment. Required.
     :vartype project_endpoint: str
     """
 
     type: Literal["foundry"] = rest_discriminator(name="type", visibility=_VISIBILITY)  # type: ignore
     """Always ``\"foundry\"``. Required."""
-    model_name: str = rest_field(visibility=_VISIBILITY)
+    deployment_name: str = rest_field(visibility=_VISIBILITY)
     """Name of the model deployment in the project. Required."""
     project_endpoint: str = rest_field(visibility=_VISIBILITY)
     """Foundry project endpoint that hosts the deployment. Required."""
 
     @overload
-    def __init__(self, *, model_name: str, project_endpoint: str) -> None: ...
+    def __init__(self, *, deployment_name: str, project_endpoint: str) -> None: ...
 
     @overload
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -160,7 +160,7 @@ class RLESamplingOptions(_Model):
     Separate from :class:`RLERolloutPolicy` on purpose: a renderer describes how a completion is
     turned into tokens, not where the weights came from, so it applies to every policy kind that
     captures a trainable graph rather than being a property of one of them. A
-    :class:`RLEFoundryPolicy` has no renderer, and the service rejects ``renderer_name`` for it.
+    :class:`RLEFoundryDeploymentPolicy` has no renderer, and the service rejects ``renderer_name`` for it.
 
     :ivar renderer_name: Optional Capture Proxy renderer profile. The service picks a compatible
      default when omitted.

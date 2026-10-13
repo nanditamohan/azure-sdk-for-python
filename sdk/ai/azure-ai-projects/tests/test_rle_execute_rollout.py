@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import RLEFoundryPolicy, RLELoomPolicy, RLESamplingOptions
+from azure.ai.projects.models import RLEFoundryDeploymentPolicy, RLELoomPolicy, RLESamplingOptions
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
@@ -376,9 +376,9 @@ def test_a_serialised_policy_deserialises_back_to_its_concrete_type():
 # Foundry policy
 
 
-def _foundry_policy() -> RLEFoundryPolicy:
-    return RLEFoundryPolicy(
-        model_name="gpt-5-mini",
+def _foundry_policy() -> RLEFoundryDeploymentPolicy:
+    return RLEFoundryDeploymentPolicy(
+        deployment_name="gpt-5-mini",
         project_endpoint="https://acct.services.ai.azure.com/api/projects/proj",
     )
 
@@ -389,7 +389,7 @@ def test_a_foundry_policy_serialises_with_no_loom_fields():
 
     assert body.as_dict()["policy"] == {
         "type": "foundry",
-        "model_name": "gpt-5-mini",
+        "deployment_name": "gpt-5-mini",
         "project_endpoint": "https://acct.services.ai.azure.com/api/projects/proj",
     }
 
@@ -400,5 +400,5 @@ def test_a_serialised_foundry_policy_deserialises_back_to_its_concrete_type():
     sent = build_rollout_body(task={"seed": 0}, policy=_foundry_policy())
     received = RLERolloutRequest(sent.as_dict())
 
-    assert isinstance(received.policy, RLEFoundryPolicy)
-    assert received.policy.model_name == "gpt-5-mini"
+    assert isinstance(received.policy, RLEFoundryDeploymentPolicy)
+    assert received.policy.deployment_name == "gpt-5-mini"

@@ -1348,7 +1348,7 @@ class RLEOperations:
         :paramtype task: any
         :keyword policy: Where this rollout's weights come from, and which backend resolves them.
          Required. Use :class:`~azure.ai.projects.models.RLELoomPolicy` to sample a Loom
-         checkpoint, which returns a trainable graph, or :class:`~azure.ai.projects.models.RLEFoundryPolicy`
+         checkpoint, which returns a trainable graph, or :class:`~azure.ai.projects.models.RLEFoundryDeploymentPolicy`
          to sample a model deployment in the project for eval only, which returns none.
         :paramtype policy: ~azure.ai.projects.models.RLERolloutPolicy
         :keyword sampling: How completions are sampled and rendered. Optional; the service picks a
