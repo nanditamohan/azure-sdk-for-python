@@ -24,20 +24,20 @@ from typing import Any, List, Literal, Mapping, Optional, overload
 from .._utils.model_base import Model as _Model, rest_discriminator, rest_field
 
 __all__ = [
-    "RLERolloutPolicy",
-    "RLELoomPolicy",
-    "RLEFoundryDeploymentPolicy",
-    "RLESamplingOptions",
-    "RLERolloutRequest",
-    "RLERolloutResult",
-    "RLERolloutEpisode",
-    "RLERolloutStep",
+    "RolloutPolicy",
+    "LoomPolicy",
+    "FoundryDeploymentPolicy",
+    "SamplingOptions",
+    "RolloutRequest",
+    "RolloutResult",
+    "RolloutEpisode",
+    "RolloutStep",
 ]
 
 _VISIBILITY = ["read", "create", "update", "delete", "query"]
 
 
-class RLERolloutPolicy(_Model):
+class RolloutPolicy(_Model):
     """Where a rollout's weights come from, discriminated by ``type``.
 
     A rollout has to say which backend resolves its weights before it can say anything about
@@ -53,7 +53,7 @@ class RLERolloutPolicy(_Model):
     """Discriminator naming the backend that resolves this policy's weights. Required."""
 
 
-class RLELoomPolicy(RLERolloutPolicy, discriminator="loom"):
+class LoomPolicy(RolloutPolicy, discriminator="loom"):
     """Weights held in a Loom training session, pinned to one immutable checkpoint.
 
     A rollout never samples from a deployment by name alone. ``session_id`` and ``checkpoint_id``
@@ -114,13 +114,13 @@ class RLELoomPolicy(RLERolloutPolicy, discriminator="loom"):
         super().__init__(*args, type="loom", **kwargs)
 
 
-class RLEFoundryDeploymentPolicy(RLERolloutPolicy, discriminator="foundry"):
+class FoundryDeploymentPolicy(RolloutPolicy, discriminator="foundry"):
     """A model deployment in the caller's Foundry project, sampled by name.
 
-    Unlike :class:`RLELoomPolicy` there are no weights to pin, so there is no session, checkpoint
+    Unlike :class:`LoomPolicy` there are no weights to pin, so there is no session, checkpoint
     or sequence identifier, and the service rejects them. Capture is text-level and eval-only: the
-    rollout carries no token ids or logprobs and is never trainable, so :attr:`RLERolloutResult.sequences`
-    is empty. Use :class:`RLELoomPolicy` for training.
+    rollout carries no token ids or logprobs and is never trainable, so :attr:`RolloutResult.sequences`
+    is empty. Use :class:`LoomPolicy` for training.
 
     The deployment must be in the project named by ``project_endpoint``; the caller's own token is
     used to reach it, so no API key is supplied.
@@ -154,13 +154,13 @@ class RLEFoundryDeploymentPolicy(RLERolloutPolicy, discriminator="foundry"):
         super().__init__(*args, type="foundry", **kwargs)
 
 
-class RLESamplingOptions(_Model):
+class SamplingOptions(_Model):
     """How a rollout's completions are sampled and rendered.
 
-    Separate from :class:`RLERolloutPolicy` on purpose: a renderer describes how a completion is
+    Separate from :class:`RolloutPolicy` on purpose: a renderer describes how a completion is
     turned into tokens, not where the weights came from, so it applies to every policy kind that
     captures a trainable graph rather than being a property of one of them. A
-    :class:`RLEFoundryDeploymentPolicy` has no renderer, and the service rejects ``renderer_name`` for it.
+    :class:`FoundryDeploymentPolicy` has no renderer, and the service rejects ``renderer_name`` for it.
 
     :ivar renderer_name: Optional Capture Proxy renderer profile. The service picks a compatible
      default when omitted.
@@ -184,7 +184,7 @@ class RLESamplingOptions(_Model):
         super().__init__(*args, **kwargs)
 
 
-class RLERolloutRequest(_Model):
+class RolloutRequest(_Model):
     """Request body for one Execute Rollout call.
 
     ``task`` is one opaque JSON value -- normally a complete dataset row -- forwarded unchanged to
@@ -197,18 +197,18 @@ class RLERolloutRequest(_Model):
     :ivar task: Opaque task record passed verbatim to the environment's reset. Required.
     :vartype task: any
     :ivar policy: Where this rollout's weights come from. Required.
-    :vartype policy: ~azure.ai.projects.models.RLERolloutPolicy
+    :vartype policy: ~azure.ai.projects.rle.RolloutPolicy
     :ivar sampling: How this rollout's completions are sampled and rendered. Optional.
-    :vartype sampling: ~azure.ai.projects.models.RLESamplingOptions
+    :vartype sampling: ~azure.ai.projects.rle.SamplingOptions
     """
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
     """Caller-generated identifier, returned unchanged. Required."""
     task: Any = rest_field(visibility=_VISIBILITY)
     """Opaque task record passed verbatim to the environment's reset. Required."""
-    policy: RLERolloutPolicy = rest_field(visibility=_VISIBILITY)
+    policy: RolloutPolicy = rest_field(visibility=_VISIBILITY)
     """Where this rollout's weights come from. Required."""
-    sampling: Optional[RLESamplingOptions] = rest_field(visibility=_VISIBILITY)
+    sampling: Optional[SamplingOptions] = rest_field(visibility=_VISIBILITY)
     """How this rollout's completions are sampled and rendered."""
 
     @overload
@@ -217,8 +217,8 @@ class RLERolloutRequest(_Model):
         *,
         rollout_id: str,
         task: Any,
-        policy: RLERolloutPolicy,
-        sampling: Optional[RLESamplingOptions] = None,
+        policy: RolloutPolicy,
+        sampling: Optional[SamplingOptions] = None,
     ) -> None: ...
 
     @overload
@@ -232,7 +232,7 @@ class RLERolloutRequest(_Model):
         super().__init__(*args, **kwargs)
 
 
-class RLERolloutStep(_Model):
+class RolloutStep(_Model):
     """One environment step of a Gym/OpenEnv episode, bound to the model turn that produced it.
 
     :ivar capture_node_id: Capture Proxy model-turn identifier that produced this action.
@@ -270,7 +270,7 @@ class RLERolloutStep(_Model):
         super().__init__(*args, **kwargs)
 
 
-class RLERolloutEpisode(_Model):
+class RolloutEpisode(_Model):
     """Gym/OpenEnv episode annotations. Absent for Harness and BYOH targets, which have no episode.
 
     :ivar kind: Discriminator for the episode shape.
@@ -278,7 +278,7 @@ class RLERolloutEpisode(_Model):
     :ivar termination_reason: Why the episode stopped.
     :vartype termination_reason: str
     :ivar steps: Ordered environment steps.
-    :vartype steps: list[~azure.ai.projects.models.RLERolloutStep]
+    :vartype steps: list[~azure.ai.projects.rle.RolloutStep]
     :ivar ungraded: Set when the episode ended without the environment ever reporting termination,
      so its reward is a running sum rather than a grade. Omitted when the environment did grade it,
      which keeps a genuine zero distinguishable from an episode that was never scored.
@@ -289,7 +289,7 @@ class RLERolloutEpisode(_Model):
     """Discriminator for the episode shape."""
     termination_reason: Optional[str] = rest_field(visibility=_VISIBILITY)
     """Why the episode stopped."""
-    steps: Optional[List[RLERolloutStep]] = rest_field(visibility=_VISIBILITY)
+    steps: Optional[List[RolloutStep]] = rest_field(visibility=_VISIBILITY)
     """Ordered environment steps."""
     ungraded: Optional[bool] = rest_field(visibility=_VISIBILITY)
     """Set when the episode ended without the environment ever reporting termination."""
@@ -300,7 +300,7 @@ class RLERolloutEpisode(_Model):
         *,
         kind: Optional[str] = None,
         termination_reason: Optional[str] = None,
-        steps: Optional[List[RLERolloutStep]] = None,
+        steps: Optional[List[RolloutStep]] = None,
         ungraded: Optional[bool] = None,
     ) -> None: ...
 
@@ -315,7 +315,7 @@ class RLERolloutEpisode(_Model):
         super().__init__(*args, **kwargs)
 
 
-class RLERolloutResult(_Model):
+class RolloutResult(_Model):
     """What one completed rollout produced.
 
     ``success`` is a grader's verdict and is therefore absent for Gym/OpenEnv, which has no
@@ -337,7 +337,7 @@ class RLERolloutResult(_Model):
     :ivar result: Optional structured target result, with protected runtime values removed.
     :vartype result: any
     :ivar episode: Gym/OpenEnv episode annotations. Absent for Harness and BYOH.
-    :vartype episode: ~azure.ai.projects.models.RLERolloutEpisode
+    :vartype episode: ~azure.ai.projects.rle.RolloutEpisode
     """
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
@@ -350,7 +350,7 @@ class RLERolloutResult(_Model):
     """Task-level verdict from a Harness grader. Absent for Gym/OpenEnv."""
     result: Optional[Any] = rest_field(visibility=_VISIBILITY)
     """Optional structured target result."""
-    episode: Optional[RLERolloutEpisode] = rest_field(visibility=_VISIBILITY)
+    episode: Optional[RolloutEpisode] = rest_field(visibility=_VISIBILITY)
     """Gym/OpenEnv episode annotations."""
 
     @overload
@@ -362,7 +362,7 @@ class RLERolloutResult(_Model):
         reward: Optional[float] = None,
         success: Optional[bool] = None,
         result: Optional[Any] = None,
-        episode: Optional[RLERolloutEpisode] = None,
+        episode: Optional[RolloutEpisode] = None,
     ) -> None: ...
 
     @overload
