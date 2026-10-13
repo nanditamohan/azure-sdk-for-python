@@ -789,6 +789,8 @@ from ._enums import (  # type: ignore
     VoiceOutputModality,
     VoiceType,
 )
+# The RLE types below are public through azure.ai.projects.rle. They stay imported here only because the
+# generated operations resolve them as ``_models.<Name>``.
 from ._enums import (  # type: ignore
     RLEnvironmentDiskImageConversionStatus,
     RLEnvironmentVersionBump,
@@ -1585,23 +1587,6 @@ __all__ = [
     "VoiceModelType",
     "VoiceOutputModality",
     "VoiceType",
-    "CreateRLEInstanceGroupRequest",
-    "CreateRLEnvironmentRequest",
-    "ListRLEInstanceGroupsResponse",
-    "ListRLEnvironmentsResponse",
-    "ListRLEnvironmentVersionsResponse",
-    "RLEInstance",
-    "RLEInstanceGroup",
-    "RLEInstanceGroupResourceProfile",
-    "RLEnvironment",
-    "RLEnvironmentState",
-    "RLEResetRequest",
-    "RLEStepRequest",
-    "RLEStepResult",
-    "RLEnvironmentDiskImageConversionStatus",
-    "RLEnvironmentVersionBump",
-    "RLEInstanceStatus",
-    "RLEPaginationOrder",
 ]
 __all__.extend([p for p in _patch_all if p not in __all__])  # pyright: ignore
 _patch_sdk()

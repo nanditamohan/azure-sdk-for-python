@@ -21,7 +21,7 @@ from urllib.parse import quote
 from azure.core.exceptions import HttpResponseError
 from azure.core.rest import HttpRequest
 
-from ..models import RLERolloutPolicy, RLERolloutRequest, RLERolloutResult, RLESamplingOptions
+from ..rle._rollout_models import RolloutPolicy, RolloutRequest, RolloutResult, SamplingOptions
 
 # The Foundry data plane gates ``:executeRollout`` on this preview api-version. It is
 # deliberately not ``config.api_version`` (``v1``), which the instance-level RLE routes use:
@@ -80,7 +80,7 @@ def build_rollout_request(
     *,
     environment_name: str,
     environment_version: str,
-    body: RLERolloutRequest,
+    body: RolloutRequest,
     forwarded_token: str,
     api_version: str = EXECUTE_ROLLOUT_API_VERSION,
 ) -> HttpRequest:
@@ -92,7 +92,7 @@ def build_rollout_request(
      pinned so the trajectory it returns names the code that produced it.
     :paramtype environment_version: str
     :keyword body: The rollout request.
-    :paramtype body: ~azure.ai.projects.models.RLERolloutRequest
+    :paramtype body: ~azure.ai.projects.models.RolloutRequest
     :keyword forwarded_token: Bearer token forwarded to Capture Proxy for Loom sampling.
     :paramtype forwarded_token: str
     :keyword api_version: Data-plane api-version for this route.
@@ -120,10 +120,10 @@ def build_rollout_request(
 def build_rollout_body(
     *,
     task: Any,
-    policy: RLERolloutPolicy,
-    sampling: Optional[RLESamplingOptions] = None,
+    policy: RolloutPolicy,
+    sampling: Optional[SamplingOptions] = None,
     rollout_id: Optional[str] = None,
-) -> RLERolloutRequest:
+) -> RolloutRequest:
     """Assemble a rollout request, generating an id when the caller did not supply one.
 
     The generated id is a bare-hex UUID, the form RLE reserves per project. A caller that wants
@@ -133,19 +133,19 @@ def build_rollout_body(
     :keyword task: Opaque task record forwarded to the environment's reset.
     :paramtype task: any
     :keyword policy: Where this rollout's weights come from.
-    :paramtype policy: ~azure.ai.projects.models.RLERolloutPolicy
+    :paramtype policy: ~azure.ai.projects.models.RolloutPolicy
     :keyword sampling: How completions are sampled and rendered.
-    :paramtype sampling: ~azure.ai.projects.models.RLESamplingOptions or None
+    :paramtype sampling: ~azure.ai.projects.models.SamplingOptions or None
     :keyword rollout_id: Caller-supplied identifier. Generated when omitted.
     :paramtype rollout_id: str or None
     :return: The assembled request.
-    :rtype: ~azure.ai.projects.models.RLERolloutRequest
+    :rtype: ~azure.ai.projects.models.RolloutRequest
     """
     if task is None:
         raise ValueError("task is required: it is the record the environment resets on")
     if policy is None:
         raise ValueError("policy is required: a rollout must name where its weights come from")
-    return RLERolloutRequest(
+    return RolloutRequest(
         rollout_id=rollout_id or uuid.uuid4().hex,
         task=task,
         policy=policy,
@@ -153,7 +153,7 @@ def build_rollout_body(
     )
 
 
-def deserialize_rollout_response(response: Any, rollout_id: str) -> RLERolloutResult:
+def deserialize_rollout_response(response: Any, rollout_id: str) -> RolloutResult:
     """Turn a completed pipeline response into a result, or raise with the service's own code.
 
     :param response: The HTTP response.
@@ -161,13 +161,13 @@ def deserialize_rollout_response(response: Any, rollout_id: str) -> RLERolloutRe
     :param rollout_id: The requested rollout id, used to correlate a failure.
     :type rollout_id: str
     :return: The rollout result.
-    :rtype: ~azure.ai.projects.models.RLERolloutResult
+    :rtype: ~azure.ai.projects.models.RolloutResult
     :raises ~azure.ai.projects.operations.RLERolloutError: If the service did not return 200.
     """
     if response.status_code != 200:
         code, message = _read_error(response)
         raise RLERolloutError(response, code=code, message=message, rollout_id=rollout_id)
-    return RLERolloutResult(response.json())
+    return RolloutResult(response.json())
 
 
 def _read_error(response: Any) -> "tuple[Optional[str], Optional[str]]":

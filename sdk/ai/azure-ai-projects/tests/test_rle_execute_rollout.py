@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import RLELoomPolicy, RLESamplingOptions
+from azure.ai.projects.rle import FoundryDeploymentPolicy, LoomPolicy, SamplingOptions
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
@@ -100,7 +100,7 @@ def _rollout(client: AIProjectClient, *args: Any, **kwargs: Any):
     return client.rle.execute_rollout(*args, enforce_https=False, **kwargs)
 
 
-def _policy(**overrides: Any) -> RLELoomPolicy:
+def _policy(**overrides: Any) -> LoomPolicy:
     values: Dict[str, Any] = {
         "model_name": "Qwen/Qwen3-32B",
         "project_endpoint": "https://acct.services.ai.azure.com/api/projects/proj",
@@ -108,7 +108,7 @@ def _policy(**overrides: Any) -> RLELoomPolicy:
         "checkpoint_id": "checkpoint-1",
     }
     values.update(overrides)
-    return RLELoomPolicy(**values)
+    return LoomPolicy(**values)
 
 
 # --------------------------------------------------------------------------------------
@@ -153,7 +153,7 @@ def test_sends_task_policy_and_sampling_verbatim(rollout_server):
             "1.0.6",
             task=task,
             policy=_policy(sequence_id=7),
-            sampling=RLESamplingOptions(renderer_name="qwen3"),
+            sampling=SamplingOptions(renderer_name="qwen3"),
             rollout_id="fixed-id",
         )
 
@@ -362,11 +362,43 @@ def test_a_serialised_policy_deserialises_back_to_its_concrete_type():
     A round trip that returned the base class would make ``session_id`` unreachable on anything
     read back from the wire, which is what a union exists to prevent.
     """
-    from azure.ai.projects.models import RLELoomPolicy, RLERolloutRequest
+    from azure.ai.projects.rle import LoomPolicy, RolloutRequest
 
     sent = build_rollout_body(task={"seed": 0}, policy=_policy(sequence_id=3))
-    received = RLERolloutRequest(sent.as_dict())
+    received = RolloutRequest(sent.as_dict())
 
-    assert isinstance(received.policy, RLELoomPolicy)
+    assert isinstance(received.policy, LoomPolicy)
     assert received.policy.session_id == "session-1"
     assert received.policy.sequence_id == 3
+
+
+# --------------------------------------------------------------------------------------
+# Foundry policy
+
+
+def _foundry_policy() -> FoundryDeploymentPolicy:
+    return FoundryDeploymentPolicy(
+        deployment_name="gpt-5-mini",
+        project_endpoint="https://acct.services.ai.azure.com/api/projects/proj",
+    )
+
+
+def test_a_foundry_policy_serialises_with_no_loom_fields():
+    """A deployment has no weights to pin, so the service rejects session and checkpoint ids."""
+    body = build_rollout_body(task={}, policy=_foundry_policy())
+
+    assert body.as_dict()["policy"] == {
+        "type": "foundry",
+        "deployment_name": "gpt-5-mini",
+        "project_endpoint": "https://acct.services.ai.azure.com/api/projects/proj",
+    }
+
+
+def test_a_serialised_foundry_policy_deserialises_back_to_its_concrete_type():
+    from azure.ai.projects.rle import RolloutRequest
+
+    sent = build_rollout_body(task={"seed": 0}, policy=_foundry_policy())
+    received = RolloutRequest(sent.as_dict())
+
+    assert isinstance(received.policy, FoundryDeploymentPolicy)
+    assert received.policy.deployment_name == "gpt-5-mini"

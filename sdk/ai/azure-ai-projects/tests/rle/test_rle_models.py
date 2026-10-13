@@ -21,16 +21,16 @@ from azure.ai.projects.aio.operations._patch_rle_async import (
     RLEOperations as AsyncRLEOperations,
 )
 from azure.ai.projects.aio.operations import _patch_rle_async as async_rle_patch
-from azure.ai.projects.models import (
-    CreateRLEInstanceGroupRequest,
-    ListRLEInstanceGroupsResponse,
-    ListRLEnvironmentsResponse,
-    ListRLEnvironmentVersionsResponse,
-    RLEInstance,
-    RLEInstanceGroup,
-    RLEInstanceStatus,
-    RLEnvironmentState,
-    RLEStepResult,
+from azure.ai.projects.rle import (
+    CreateInstanceGroupRequest,
+    ListEnvironmentVersionsResponse,
+    ListEnvironmentsResponse,
+    ListInstanceGroupsResponse,
+    Instance,
+    InstanceGroup,
+    InstanceStatus,
+    EnvironmentState,
+    StepResult,
 )
 from azure.ai.projects.operations import RLEOperations
 from azure.ai.projects.operations import _operations as generated_operations
@@ -123,9 +123,9 @@ def _record_runtime(
         )
     )
     if op in ("reset", "step"):
-        return RLEStepResult(observation={"ok": True})
+        return StepResult(observation={"ok": True})
     if op == "state":
-        return RLEnvironmentState(episode_id="e", step_count=1)
+        return EnvironmentState(episode_id="e", step_count=1)
     return {"status": "ok"}
 
 
@@ -233,14 +233,22 @@ def test_rle_symbols_exported_from_public_namespace():
         assert not hasattr(operations, generated_operation_name)
         assert generated_operation_name not in aio_operations.__all__
         assert not hasattr(aio_operations, generated_operation_name)
-    assert getattr(models, "RLEStepResult")
-    assert getattr(models, "RLEnvironmentState")
-    assert getattr(models, "RLEInstance")
-    assert getattr(models, "RLEInstanceGroup")
-    assert (
-        getattr(models, "ListRLEnvironmentVersionsResponse")
-        is ListRLEnvironmentVersionsResponse
-    )
+    import azure.ai.projects.rle as rle
+
+    # The RLE types are public through ``azure.ai.projects.rle`` only. The generated operations still
+    # resolve them on ``models``, so they stay importable there but are not part of its public surface.
+    for old_name, new_name in (
+        ("RLEStepResult", "StepResult"),
+        ("RLEnvironmentState", "EnvironmentState"),
+        ("RLEInstance", "Instance"),
+        ("RLEInstanceGroup", "InstanceGroup"),
+        ("ListEnvironmentVersionsResponse", "ListEnvironmentVersionsResponse"),
+        ("RLEInstanceStatus", "InstanceStatus"),
+        ("RLERolloutResult", "RolloutResult"),
+    ):
+        assert new_name in rle.__all__
+        assert getattr(rle, new_name)
+        assert old_name not in models.__all__
 
 
 def test_rle_requires_preview_opt_in():
@@ -300,10 +308,10 @@ def test_coerce_action_rejects_ambiguous_or_invalid_actions():
 
 
 def test_coerce_reset_body_with_no_extras_returns_strict_model():
-    from azure.ai.projects.models import RLEResetRequest
+    from azure.ai.projects.rle import ResetRequest
 
     body = coerce_reset_body(42, None, {})
-    assert isinstance(body, RLEResetRequest)
+    assert isinstance(body, ResetRequest)
     assert body.seed == 42
     assert body.episode_id is None
 
@@ -322,9 +330,9 @@ def test_coerce_reset_body_uses_openenv_episode_id_wire_name():
 
 
 def test_reset_request_model_uses_openenv_episode_id_wire_name():
-    from azure.ai.projects.models import RLEResetRequest
+    from azure.ai.projects.rle import ResetRequest
 
-    assert RLEResetRequest(seed=42, episode_id="ep-1").as_dict() == {
+    assert ResetRequest(seed=42, episode_id="ep-1").as_dict() == {
         "seed": 42,
         "episode_id": "ep-1",
     }
@@ -430,10 +438,10 @@ class _FakeInstances:
             )
         if self._fail_on is not None and index == self._fail_on:
             instance = _FakeInstance(
-                f"inst-{index}", RLEInstanceStatus.FAILED, error="boom"
+                f"inst-{index}", InstanceStatus.FAILED, error="boom"
             )
         else:
-            instance = _FakeInstance(f"inst-{index}", RLEInstanceStatus.RUNNING)
+            instance = _FakeInstance(f"inst-{index}", InstanceStatus.RUNNING)
         if cls is not None:
             return cls(_pipeline_response(201), instance, {})
         return instance
@@ -441,7 +449,7 @@ class _FakeInstances:
     def get_instance(
         self, environment_name, environment_version, instance_group_id, instance_id
     ):
-        return _FakeInstance(instance_id, RLEInstanceStatus.RUNNING)
+        return _FakeInstance(instance_id, InstanceStatus.RUNNING)
 
     def delete_instance(
         self, environment_name, environment_version, instance_group_id, instance_id
@@ -450,7 +458,7 @@ class _FakeInstances:
             (environment_name, environment_version, instance_group_id, instance_id)
         )
         self.released.append(instance_id)
-        return _FakeInstance(instance_id, RLEInstanceStatus.RUNNING)
+        return _FakeInstance(instance_id, InstanceStatus.RUNNING)
 
     def reset(
         self,
@@ -569,7 +577,7 @@ class _FakeInstances202:
         self, environment_name, environment_version, instance_group_id, *, cls=None
     ):
         self.create_count += 1
-        instance = _FakeInstance("inst-0", RLEInstanceStatus.CREATING)
+        instance = _FakeInstance("inst-0", InstanceStatus.CREATING)
         response = _pipeline_response(202, {"Retry-After": "0"})
         if cls is not None:
             return cls(response, instance, {})
@@ -584,9 +592,9 @@ class _FakeInstances202:
     ):
         self.get_count += 1
         status = (
-            RLEInstanceStatus.RUNNING
+            InstanceStatus.RUNNING
             if self.get_count >= self._running_after
-            else RLEInstanceStatus.CREATING
+            else InstanceStatus.CREATING
         )
         return _FakeInstance(instance_id, status)
 
@@ -594,7 +602,7 @@ class _FakeInstances202:
         self, environment_name, environment_version, instance_group_id, instance_id
     ):
         self.released.append(instance_id)
-        return _FakeInstance(instance_id, RLEInstanceStatus.RUNNING)
+        return _FakeInstance(instance_id, InstanceStatus.RUNNING)
 
     def health(
         self, environment_name, environment_version, instance_group_id, instance_id
@@ -731,7 +739,7 @@ def test_openenv_get_instance_polls_pending_202_without_recreating():
     with client:
         with client.get_instance() as instance:
             assert instance.id == "inst-0"
-            assert instance.instance.status == RLEInstanceStatus.RUNNING
+            assert instance.instance.status == InstanceStatus.RUNNING
     assert instances.create_count == 1
     assert instances.get_count >= 1
     assert instances.released == ["inst-0"]
@@ -898,9 +906,9 @@ def test_openenv_instance_runtime_uses_resolved_environment_route():
             assert instance.environment_name == "env-1"
             assert instance.environment_version == "resolved-latest"
 
-            assert isinstance(instance.reset(seed=42), RLEStepResult)
-            assert isinstance(instance.step({"code": "print(1)"}), RLEStepResult)
-            assert isinstance(instance.state(), RLEnvironmentState)
+            assert isinstance(instance.reset(seed=42), StepResult)
+            assert isinstance(instance.step({"code": "print(1)"}), StepResult)
+            assert isinstance(instance.state(), EnvironmentState)
             assert instance.health() == {"status": "ok"}
             assert instance.metadata() == {"status": "ok"}
             assert instance.schema() == {"status": "ok"}
@@ -935,7 +943,7 @@ def test_openenv_instance_reset_forwards_environment_specific_kwargs():
         with client.get_instance() as instance:
             assert isinstance(
                 instance.reset(seed=7, episode_id="ep-9", task_id="duke_energy"),
-                RLEStepResult,
+                StepResult,
             )
 
     reset_call = next(call for call in instances.calls if call[0] == "reset")
@@ -985,7 +993,7 @@ def test_openenv_instance_allows_workload_for_successful_health_response():
     client, _groups, _instances = _make_openenv_client(instances=instances)
     with client:
         with client.get_instance() as instance:
-            assert isinstance(instance.reset(), RLEStepResult)
+            assert isinstance(instance.reset(), StepResult)
     assert [call[0] for call in instances.calls] == ["health", "health", "reset"]
 
 
@@ -1234,13 +1242,13 @@ def test_async_environment_list_helpers_reject_invalid_pagination_limits(limit):
 
 
 def test_rle_list_responses_expose_continuation_tokens():
-    environment_response = ListRLEnvironmentsResponse(
+    environment_response = ListEnvironmentsResponse(
         data=[], next_continuation_token="environments-next"
     )
-    version_response = ListRLEnvironmentVersionsResponse(
+    version_response = ListEnvironmentVersionsResponse(
         data=[], next_continuation_token="versions-next"
     )
-    instance_group_response = ListRLEInstanceGroupsResponse(
+    instance_group_response = ListInstanceGroupsResponse(
         data=[], next_continuation_token="groups-next"
     )
 
@@ -1343,7 +1351,7 @@ def test_rle_runtime_routes_require_environment_version(operation):
 
 
 def test_create_instance_group_request_uses_max_active_instances():
-    request = CreateRLEInstanceGroupRequest(max_active_instances=3)
+    request = CreateInstanceGroupRequest(max_active_instances=3)
     assert request.max_active_instances == 3
     assert not hasattr(request, "environment_name")
     assert not hasattr(request, "environment_version")
@@ -1441,10 +1449,10 @@ class _AsyncFakeInstances:
             )
         if self._fail_on is not None and index == self._fail_on:
             instance = _FakeInstance(
-                f"inst-{index}", RLEInstanceStatus.FAILED, error="boom"
+                f"inst-{index}", InstanceStatus.FAILED, error="boom"
             )
         else:
-            instance = _FakeInstance(f"inst-{index}", RLEInstanceStatus.RUNNING)
+            instance = _FakeInstance(f"inst-{index}", InstanceStatus.RUNNING)
         if cls is not None:
             return cls(_pipeline_response(201), instance, {})
         return instance
@@ -1452,7 +1460,7 @@ class _AsyncFakeInstances:
     async def get_instance(
         self, environment_name, environment_version, instance_group_id, instance_id
     ):
-        return _FakeInstance(instance_id, RLEInstanceStatus.RUNNING)
+        return _FakeInstance(instance_id, InstanceStatus.RUNNING)
 
     async def delete_instance(
         self, environment_name, environment_version, instance_group_id, instance_id
@@ -1461,7 +1469,7 @@ class _AsyncFakeInstances:
             (environment_name, environment_version, instance_group_id, instance_id)
         )
         self.released.append(instance_id)
-        return _FakeInstance(instance_id, RLEInstanceStatus.RUNNING)
+        return _FakeInstance(instance_id, InstanceStatus.RUNNING)
 
     async def reset(
         self,
@@ -1578,7 +1586,7 @@ class _AsyncFakeInstances202:
         self, environment_name, environment_version, instance_group_id, *, cls=None
     ):
         self.create_count += 1
-        instance = _FakeInstance("inst-0", RLEInstanceStatus.CREATING)
+        instance = _FakeInstance("inst-0", InstanceStatus.CREATING)
         response = _pipeline_response(202, {"Retry-After": "0"})
         if cls is not None:
             return cls(response, instance, {})
@@ -1593,9 +1601,9 @@ class _AsyncFakeInstances202:
     ):
         self.get_count += 1
         status = (
-            RLEInstanceStatus.RUNNING
+            InstanceStatus.RUNNING
             if self.get_count >= self._running_after
-            else RLEInstanceStatus.CREATING
+            else InstanceStatus.CREATING
         )
         return _FakeInstance(instance_id, status)
 
@@ -1603,7 +1611,7 @@ class _AsyncFakeInstances202:
         self, environment_name, environment_version, instance_group_id, instance_id
     ):
         self.released.append(instance_id)
-        return _FakeInstance(instance_id, RLEInstanceStatus.RUNNING)
+        return _FakeInstance(instance_id, InstanceStatus.RUNNING)
 
     async def health(
         self, environment_name, environment_version, instance_group_id, instance_id
@@ -1652,9 +1660,9 @@ def test_async_openenv_client_creates_group_and_runs():
                 assert instance.id.startswith("inst-")
                 assert instance.environment_name == "env-1"
                 assert instance.environment_version == "resolved-latest"
-                assert isinstance(await instance.reset(seed=7), RLEStepResult)
-                assert isinstance(await instance.step({"code": "x"}), RLEStepResult)
-                assert isinstance(await instance.state(), RLEnvironmentState)
+                assert isinstance(await instance.reset(seed=7), StepResult)
+                assert isinstance(await instance.step({"code": "x"}), StepResult)
+                assert isinstance(await instance.state(), EnvironmentState)
                 assert await instance.health() == {"status": "ok"}
                 assert await instance.metadata() == {"status": "ok"}
                 assert await instance.schema() == {"status": "ok"}
@@ -1698,7 +1706,7 @@ def test_async_openenv_instance_reset_forwards_environment_specific_kwargs():
                     await instance.reset(
                         seed=7, episode_id="ep-9", task_id="duke_energy"
                     ),
-                    RLEStepResult,
+                    StepResult,
                 )
 
         reset_call = next(call for call in instances.calls if call[0] == "reset")
@@ -2412,7 +2420,7 @@ def test_async_openenv_instance_allows_workload_for_successful_health_response()
         client, _groups, _instances = _make_async_openenv_client(instances=instances)
         async with client:
             async with client.get_instance() as instance:
-                assert isinstance(await instance.step({"code": "x"}), RLEStepResult)
+                assert isinstance(await instance.step({"code": "x"}), StepResult)
         assert [call[0] for call in instances.calls] == ["health", "health", "step"]
 
     asyncio.run(run())
@@ -2705,7 +2713,7 @@ def test_async_openenv_get_instance_polls_pending_202_without_recreating():
         async with client:
             async with client.get_instance() as instance:
                 assert instance.id == "inst-0"
-                assert instance.instance.status == RLEInstanceStatus.RUNNING
+                assert instance.instance.status == InstanceStatus.RUNNING
         assert instances.create_count == 1
         assert instances.get_count >= 1
         assert instances.released == ["inst-0"]

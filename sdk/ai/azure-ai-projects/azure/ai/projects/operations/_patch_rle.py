@@ -11,9 +11,9 @@ Foundry project endpoint, exactly like the other operation groups on the client.
 
 The RLE surface models two service concepts:
 
-* An **instance group** (:class:`~azure.ai.projects.models.RLEInstanceGroup`) reserves capacity for a
+* An **instance group** (:class:`~azure.ai.projects.rle.InstanceGroup`) reserves capacity for a
   hosted environment at a pinned version and owns a fixed number of instances.
-* An **instance** (:class:`~azure.ai.projects.models.RLEInstance`) is a single running environment
+* An **instance** (:class:`~azure.ai.projects.rle.Instance`) is a single running environment
   process leased from a group. Runtime calls (reset/step/state/...) use the resolved environment
   name and version, instance-group id, and instance id returned by the service.
 """
@@ -61,9 +61,6 @@ from ..models import (
     RLEInstance,
     RLEInstanceGroup,
     RLEInstanceStatus,
-    RLERolloutPolicy,
-    RLESamplingOptions,
-    RLERolloutResult,
     RLEnvironment,
     RLEnvironmentState,
     RLEnvironmentVersionBump,
@@ -72,6 +69,7 @@ from ..models import (
     RLEStepRequest,
     RLEStepResult,
 )
+from ..rle._rollout_models import RolloutPolicy, RolloutResult, SamplingOptions
 from ._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
     RLERolloutError,
@@ -522,7 +520,7 @@ def coerce_reset_body(
     Mirrors :func:`coerce_action` for ``step``: extra keyword arguments passed to ``reset`` are
     environment-specific reset parameters (for example, a task or config override), not transport
     options, so they are not forwarded as operation kwargs. A strict
-    :class:`~azure.ai.projects.models.RLEResetRequest` is returned when the body contains only an
+    :class:`~azure.ai.projects.rle.ResetRequest` is returned when the body contains only an
     optional seed. A plain ``dict`` is returned when an episode ID or environment-specific fields
     are present so the request uses OpenEnv's ``episode_id`` wire name and can include arbitrary
     extras.
@@ -534,7 +532,7 @@ def coerce_reset_body(
     :param reset_kwargs: Environment-specific reset fields supplied as keyword arguments.
     :type reset_kwargs: mapping[str, any]
     :return: The reset request body.
-    :rtype: ~azure.ai.projects.models.RLEResetRequest or dict
+    :rtype: ~azure.ai.projects.rle.ResetRequest or dict
     """
     if not reset_kwargs and episode_id is None:
         return RLEResetRequest(seed=seed)
@@ -586,7 +584,7 @@ def _acquire_instance(
     :keyword poll_interval_s: Interval between instance readiness polls, in seconds.
     :paramtype poll_interval_s: float
     :return: The leased instance, once it reports ``Running`` and healthy.
-    :rtype: ~azure.ai.projects.models.RLEInstance
+    :rtype: ~azure.ai.projects.rle.Instance
     """
     deadline = time.monotonic() + instance_acquire_timeout
     captured: Dict[str, Any] = {}
@@ -711,7 +709,7 @@ class OpenEnvInstance:  # pylint: disable=too-many-instance-attributes
     """A leased RLE instance that runs episodes under a resolved environment version.
 
     An instance is obtained from :meth:`OpenEnvClient.get_instance`. It wraps a single leased
-    :class:`~azure.ai.projects.models.RLEInstance` and drives the OpenEnv / Gymnasium runtime
+    :class:`~azure.ai.projects.rle.Instance` and drives the OpenEnv / Gymnasium runtime
     operations (``reset``/``step``/``state``) against it. Each :meth:`reset` starts a new episode, so
     an instance may run one or more episodes while it is checked out. v1 does not reuse instances:
     exiting the instance's ``with`` block releases the underlying instance immediately. Runtime
@@ -724,7 +722,7 @@ class OpenEnvInstance:  # pylint: disable=too-many-instance-attributes
     :keyword environment_version: Resolved environment version that owns the instance group.
     :paramtype environment_version: str
     :keyword instance: The leased, running instance that backs this object. Required.
-    :paramtype instance: ~azure.ai.projects.models.RLEInstance
+    :paramtype instance: ~azure.ai.projects.rle.Instance
     :keyword instances: Generated instance lifecycle operations bound to the project client. Required.
     :paramtype instances: ~azure.ai.projects.operations.RLEInstancesOperations
     :keyword runtime: Generated instance runtime operations bound to the project client. Required.
@@ -800,7 +798,7 @@ class OpenEnvInstance:  # pylint: disable=too-many-instance-attributes
     def instance(self) -> RLEInstance:
         """The underlying leased instance model.
 
-        :rtype: ~azure.ai.projects.models.RLEInstance
+        :rtype: ~azure.ai.projects.rle.Instance
         """
         if self._instance is None:
             raise RLEError("instance has been released")
@@ -881,7 +879,7 @@ class OpenEnvInstance:  # pylint: disable=too-many-instance-attributes
         :param episode_id: Optional caller-supplied episode identifier.
         :type episode_id: str or None
         :return: The initial step result for the new episode.
-        :rtype: ~azure.ai.projects.models.RLEStepResult
+        :rtype: ~azure.ai.projects.rle.StepResult
         """
         self._ensure_healthy()
         return self._runtime.reset(
@@ -899,7 +897,7 @@ class OpenEnvInstance:  # pylint: disable=too-many-instance-attributes
         :param action: The action to apply, as a mapping or model. Mutually exclusive with keyword fields.
         :type action: any
         :return: The step result after applying the action.
-        :rtype: ~azure.ai.projects.models.RLEStepResult
+        :rtype: ~azure.ai.projects.rle.StepResult
         """
         self._ensure_healthy()
         return self._runtime.step(
@@ -915,7 +913,7 @@ class OpenEnvInstance:  # pylint: disable=too-many-instance-attributes
         """Return the current environment state for this instance.
 
         :return: The current environment state.
-        :rtype: ~azure.ai.projects.models.RLEnvironmentState
+        :rtype: ~azure.ai.projects.rle.EnvironmentState
         """
         self._ensure_healthy()
         return self._runtime.state(
@@ -1289,9 +1287,9 @@ class RLEOperations:
         :keyword name: Optional environment name. The service assigns one when omitted.
         :paramtype name: str or None
         :keyword version_bump: Semantic version component to increment. Omit to let the service choose.
-        :paramtype version_bump: str or ~azure.ai.projects.models.RLEnvironmentVersionBump or None
+        :paramtype version_bump: str or ~azure.ai.projects.rle.EnvironmentVersionBump or None
         :return: The created RLEnvironment.
-        :rtype: ~azure.ai.projects.models.RLEnvironment
+        :rtype: ~azure.ai.projects.rle.Environment
         :raises ~azure.core.exceptions.HttpResponseError:
         """
         if not acr_image_path:
@@ -1323,9 +1321,9 @@ class RLEOperations:
         :keyword continuation_token: Opaque continuation token from a previous page. Omit to fetch the first page.
         :paramtype continuation_token: str or None
         :keyword order: Sort order for the page. Known values are "asc" and "desc".
-        :paramtype order: str or ~azure.ai.projects.models.RLEPaginationOrder or None
+        :paramtype order: str or ~azure.ai.projects.rle.PaginationOrder or None
         :return: An iterator over hosted RLE environments.
-        :rtype: ~azure.core.paging.ItemPaged[~azure.ai.projects.models.RLEnvironment]
+        :rtype: ~azure.core.paging.ItemPaged[~azure.ai.projects.rle.Environment]
         :raises ~azure.core.exceptions.HttpResponseError:
         """
         _validate_pagination_limit(limit)
@@ -1356,7 +1354,7 @@ class RLEOperations:
         :param name: Environment name. Required.
         :type name: str
         :return: The requested RLEnvironment.
-        :rtype: ~azure.ai.projects.models.RLEnvironment
+        :rtype: ~azure.ai.projects.rle.Environment
         :raises ~azure.core.exceptions.HttpResponseError:
         """
         return self._environments.get_environment(name, **kwargs)
@@ -1372,7 +1370,7 @@ class RLEOperations:
         :param version: Environment version identifier. Required.
         :type version: str
         :return: The requested RLEnvironment at the given version.
-        :rtype: ~azure.ai.projects.models.RLEnvironment
+        :rtype: ~azure.ai.projects.rle.Environment
         :raises ~azure.core.exceptions.HttpResponseError:
         """
         return self._environments.get_environment_version(name, version, **kwargs)
@@ -1396,9 +1394,9 @@ class RLEOperations:
         :keyword continuation_token: Opaque continuation token from a previous page. Omit to fetch the first page.
         :paramtype continuation_token: str or None
         :keyword order: Sort order for the page. Known values are "asc" and "desc".
-        :paramtype order: str or ~azure.ai.projects.models.RLEPaginationOrder or None
+        :paramtype order: str or ~azure.ai.projects.rle.PaginationOrder or None
         :return: An iterator over historical environment versions.
-        :rtype: ~azure.core.paging.ItemPaged[~azure.ai.projects.models.RLEnvironment]
+        :rtype: ~azure.core.paging.ItemPaged[~azure.ai.projects.rle.Environment]
         :raises ~azure.core.exceptions.HttpResponseError:
         """
         _validate_pagination_limit(limit)
@@ -1446,9 +1444,9 @@ class RLEOperations:
         :keyword continuation_token: Opaque continuation token from a previous page. Omit to fetch the first page.
         :paramtype continuation_token: str or None
         :keyword order: Sort order for the page. Known values are "asc" and "desc".
-        :paramtype order: str or ~azure.ai.projects.models.RLEPaginationOrder or None
+        :paramtype order: str or ~azure.ai.projects.rle.PaginationOrder or None
         :return: An iterator over RLE instance groups.
-        :rtype: ~azure.core.paging.ItemPaged[~azure.ai.projects.models.RLEInstanceGroup]
+        :rtype: ~azure.core.paging.ItemPaged[~azure.ai.projects.rle.InstanceGroup]
         :raises ~azure.core.exceptions.HttpResponseError:
         """
         _validate_pagination_limit(limit)
@@ -1558,12 +1556,12 @@ class RLEOperations:
         environment_version: str,
         *,
         task: Any,
-        policy: RLERolloutPolicy,
-        sampling: Optional[RLESamplingOptions] = None,
+        policy: RolloutPolicy,
+        sampling: Optional[SamplingOptions] = None,
         rollout_id: Optional[str] = None,
         forwarded_token: Optional[str] = None,
         **kwargs: Any,
-    ) -> RLERolloutResult:
+    ) -> RolloutResult:
         """Run one complete rollout of a published environment version and return what it produced.
 
         The service owns the episode. It leases a fresh sandbox, resets the environment on
@@ -1589,11 +1587,13 @@ class RLEOperations:
          environment's reset. Required.
         :paramtype task: any
         :keyword policy: Where this rollout's weights come from, and which backend resolves them.
-         Required. :class:`~azure.ai.projects.models.RLELoomPolicy` is the only kind today.
-        :paramtype policy: ~azure.ai.projects.models.RLERolloutPolicy
+         Required. Use :class:`~azure.ai.projects.models.LoomPolicy` to sample a Loom
+         checkpoint, which returns a trainable graph, or :class:`~azure.ai.projects.models.FoundryDeploymentPolicy`
+         to sample a model deployment in the project for eval only, which returns none.
+        :paramtype policy: ~azure.ai.projects.models.RolloutPolicy
         :keyword sampling: How completions are sampled and rendered. Optional; the service picks a
-         compatible renderer when omitted.
-        :paramtype sampling: ~azure.ai.projects.models.RLESamplingOptions or None
+         compatible renderer when omitted. Not accepted with a Foundry policy.
+        :paramtype sampling: ~azure.ai.projects.models.SamplingOptions or None
         :keyword rollout_id: Caller-supplied identifier, reserved within the project and returned
          unchanged. A bare-hex UUID is generated when omitted.
         :paramtype rollout_id: str or None
@@ -1601,7 +1601,7 @@ class RLEOperations:
          Acquired from this client's credential when omitted, which is the common case.
         :paramtype forwarded_token: str or None
         :return: The completed rollout.
-        :rtype: ~azure.ai.projects.models.RLERolloutResult
+        :rtype: ~azure.ai.projects.models.RolloutResult
         :raises ~azure.ai.projects.operations.RLERolloutError: If the service refused the request
          or could not complete the rollout.
         """
