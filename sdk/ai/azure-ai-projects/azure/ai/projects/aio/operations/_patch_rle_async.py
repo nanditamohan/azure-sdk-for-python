@@ -101,6 +101,7 @@ from ._operations import (
 
 if TYPE_CHECKING:
     from azure.core.credentials_async import AsyncTokenCredential
+    from ._rollout_session_async import AsyncRolloutSession
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,19 +112,29 @@ async def _connect_openenv_websocket(
     *,
     token: str,
     subprotocols: Optional[Sequence[Subprotocol]],
+    additional_headers: Optional[Mapping[str, str]] = None,
+    timeout: float = _WEBSOCKET_CONNECTION_TIMEOUT_S,
+    max_size: Optional[int] = None,
+    close_timeout: Optional[float] = None,
 ) -> ClientConnection:
-    deadline = time.monotonic() + _WEBSOCKET_CONNECTION_TIMEOUT_S
+    deadline = time.monotonic() + min(timeout, _WEBSOCKET_CONNECTION_TIMEOUT_S)
+    options: Dict[str, Any] = {}
+    if max_size is not None:
+        options["max_size"] = max_size
+    if close_timeout is not None:
+        options["close_timeout"] = close_timeout
     for attempt in range(_WEBSOCKET_CONNECT_ATTEMPTS):
         try:
             return await websocket_connect(
                 url,
-                additional_headers={"Authorization": f"Bearer {token}"},
+                additional_headers={**(additional_headers or {}), "Authorization": "Bearer " + token},
                 open_timeout=min(
                     _WEBSOCKET_ATTEMPT_TIMEOUT_S,
                     _remaining_websocket_timeout(deadline),
                 ),
                 subprotocols=subprotocols,
                 logger=_WEBSOCKET_LOGGER,
+                **options,
             )
         except (
             EOFError,
@@ -133,16 +144,11 @@ async def _connect_openenv_websocket(
             InvalidStatus,
             _InvalidProxyStatus,
         ) as exc:
-            if (
-                attempt == _WEBSOCKET_CONNECT_ATTEMPTS - 1
-                or not _is_retryable_websocket_error(exc)
-            ):
+            if attempt == _WEBSOCKET_CONNECT_ATTEMPTS - 1 or not _is_retryable_websocket_error(exc):
                 raise
             backoff = _websocket_retry_delay(attempt)
             if deadline - time.monotonic() <= backoff:
-                raise TimeoutError(
-                    "timed out while opening the OpenEnv WebSocket"
-                ) from exc
+                raise TimeoutError("timed out while opening the OpenEnv WebSocket") from exc
             await asyncio.sleep(backoff)
     raise AssertionError("unreachable")
 
@@ -180,11 +186,7 @@ class AsyncOpenEnvWebSocket:
         self._url = url
         self._credential = credential
         self._credential_scopes = tuple(credential_scopes)
-        self._subprotocols = (
-            tuple(Subprotocol(value) for value in subprotocols)
-            if subprotocols
-            else None
-        )
+        self._subprotocols = tuple(Subprotocol(value) for value in subprotocols) if subprotocols else None
         self._on_close = _on_close
         self._connection: Optional[ClientConnection] = None
         self._closed = False
@@ -254,9 +256,7 @@ class AsyncOpenEnvWebSocket:
 
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
-            raise RLEError(
-                "enter the AsyncOpenEnvWebSocket context before sending or receiving"
-            )
+            raise RLEError("enter the AsyncOpenEnvWebSocket context before sending or receiving")
         return self._connection
 
 
@@ -307,9 +307,7 @@ async def _acquire_instance(
     deadline = time.monotonic() + instance_acquire_timeout
     captured: Dict[str, Any] = {}
 
-    def _capture(
-        pipeline_response: Any, deserialized: Any, _response_headers: Any
-    ) -> Any:
+    def _capture(pipeline_response: Any, deserialized: Any, _response_headers: Any) -> Any:
         captured["response"] = pipeline_response.http_response
         return deserialized
 
@@ -330,8 +328,7 @@ async def _acquire_instance(
             details, retry_after = capacity_retry
             if not await _sleep_before_deadline(retry_after, deadline):
                 raise RLEInstanceAcquireTimeoutError(
-                    f"instance group {instance_group_id} remained at capacity for "
-                    f"{instance_acquire_timeout:.0f}s",
+                    f"instance group {instance_group_id} remained at capacity for " f"{instance_acquire_timeout:.0f}s",
                     timeout=instance_acquire_timeout,
                     last_status=_error_code(details),
                     details=details,
@@ -342,9 +339,7 @@ async def _acquire_instance(
 
     # The initial (possibly 202) response may carry a Retry-After hint for the first poll.
     initial_retry_after = _parse_retry_after(captured.get("response"))
-    next_wait = (
-        initial_retry_after if initial_retry_after is not None else poll_interval_s
-    )
+    next_wait = initial_retry_after if initial_retry_after is not None else poll_interval_s
     try:
         while not _status_matches(instance.status, RLEInstanceStatus.RUNNING):
             if any(
@@ -355,13 +350,9 @@ async def _acquire_instance(
                     RLEInstanceStatus.DELETED,
                 )
             ):
-                raise RLEError(
-                    f"instance {instance_id} failed to start: {instance.error or 'unknown error'}"
-                )
+                raise RLEError(f"instance {instance_id} failed to start: {instance.error or 'unknown error'}")
             if time.monotonic() >= deadline:
-                last_status = str(
-                    getattr(instance.status, "value", instance.status) or "unknown"
-                )
+                last_status = str(getattr(instance.status, "value", instance.status) or "unknown")
                 raise RLEInstanceAcquireTimeoutError(
                     f"instance {instance_id} not ready after {instance_acquire_timeout:.0f}s "
                     f"(last status: {last_status})",
@@ -369,9 +360,7 @@ async def _acquire_instance(
                     last_status=last_status,
                 )
             if not await _sleep_before_deadline(next_wait, deadline):
-                last_status = str(
-                    getattr(instance.status, "value", instance.status) or "unknown"
-                )
+                last_status = str(getattr(instance.status, "value", instance.status) or "unknown")
                 raise RLEInstanceAcquireTimeoutError(
                     f"instance {instance_id} not ready after {instance_acquire_timeout:.0f}s "
                     f"(last status: {last_status})",
@@ -396,15 +385,11 @@ async def _acquire_instance(
                 )
                 break
             except HttpResponseError as exc:
-                if (
-                    getattr(exc.response, "status_code", None)
-                    not in _TRANSIENT_HEALTH_STATUS_CODES
-                ):
+                if getattr(exc.response, "status_code", None) not in _TRANSIENT_HEALTH_STATUS_CODES:
                     raise
             if not await _sleep_before_deadline(poll_interval_s, deadline):
                 raise RLEInstanceAcquireTimeoutError(
-                    f"instance {instance_id} runtime was not healthy after "
-                    f"{instance_acquire_timeout:.0f}s",
+                    f"instance {instance_id} runtime was not healthy after " f"{instance_acquire_timeout:.0f}s",
                     timeout=instance_acquire_timeout,
                     last_status="Unhealthy",
                 )
@@ -490,9 +475,7 @@ class AsyncOpenEnvInstance:  # pylint: disable=too-many-instance-attributes
         if instance is None:
             if self._released:
                 raise RLEError("instance has been released")
-            raise RLEError(
-                "enter the AsyncOpenEnvInstance context before accessing the instance"
-            )
+            raise RLEError("enter the AsyncOpenEnvInstance context before accessing the instance")
         if not instance.instance_id:
             raise RLEError("service did not return an instance id")
         return instance.instance_id
@@ -530,9 +513,7 @@ class AsyncOpenEnvInstance:  # pylint: disable=too-many-instance-attributes
         if self._instance is None:
             if self._released:
                 raise RLEError("instance has been released")
-            raise RLEError(
-                "enter the AsyncOpenEnvInstance context before accessing the instance"
-            )
+            raise RLEError("enter the AsyncOpenEnvInstance context before accessing the instance")
         return self._instance
 
     async def __aenter__(self) -> "AsyncOpenEnvInstance":
@@ -593,9 +574,7 @@ class AsyncOpenEnvInstance:  # pylint: disable=too-many-instance-attributes
             raise RLEError("instance has been released")
         instance = self._instance
         if instance is None:
-            raise RLEError(
-                "enter the AsyncOpenEnvInstance context before accessing the instance"
-            )
+            raise RLEError("enter the AsyncOpenEnvInstance context before accessing the instance")
         if not instance.instance_id:
             raise RLEError("service did not return an instance id")
         config = self._websocket_config
@@ -890,9 +869,7 @@ class AsyncOpenEnvClient:  # pylint: disable=too-many-instance-attributes,async-
             if self._version is None:
                 environment = await self._environments.get_environment(self._name)
                 if not environment.version:
-                    raise RLEError(
-                        "service did not return the environment's latest version"
-                    )
+                    raise RLEError("service did not return the environment's latest version")
                 self._version = environment.version
             try:
                 group = await self._instance_groups.create_instance_group(
@@ -919,9 +896,7 @@ class AsyncOpenEnvClient:  # pylint: disable=too-many-instance-attributes,async-
                     )
                 except AzureError:
                     pass
-                raise RLEError(
-                    "service did not return the instance group's environment name and version"
-                )
+                raise RLEError("service did not return the instance group's environment name and version")
             self._name = group.environment_name
             self._version = group.environment_version
             self._instance_group_id = group.instance_group_id
@@ -948,14 +923,10 @@ class AsyncOpenEnvClient:  # pylint: disable=too-many-instance-attributes,async-
             raise RLEError("OpenEnv client is closed")
         group_id = self._instance_group_id
         if group_id is None:
-            raise RLEError(
-                "reserve quota first: enter the AsyncOpenEnvClient context before get_instance()"
-            )
+            raise RLEError("reserve quota first: enter the AsyncOpenEnvClient context before get_instance()")
         environment_version = self._version
         if environment_version is None:
-            raise RLEError(
-                "service did not resolve the instance group's environment version"
-            )
+            raise RLEError("service did not resolve the instance group's environment version")
         return AsyncOpenEnvInstance(
             self._name,
             group_id,
@@ -990,9 +961,7 @@ class AsyncOpenEnvClient:  # pylint: disable=too-many-instance-attributes,async-
             return
         environment_version = self._version
         if environment_version is None:
-            raise RLEError(
-                "service did not resolve the instance group's environment version"
-            )
+            raise RLEError("service did not resolve the instance group's environment version")
         try:
             await self._instance_groups.delete_instance_group(
                 self._name,
@@ -1049,9 +1018,7 @@ class RLEOperations:
         if not acr_image_path:
             raise ValueError("acr_image_path is required")
         return await self._environments.create_environment(
-            CreateRLEnvironmentRequest(
-                name=name, acr_image_path=acr_image_path, version_bump=version_bump
-            ),
+            CreateRLEnvironmentRequest(name=name, acr_image_path=acr_image_path, version_bump=version_bump),
             **kwargs,
         )
 
@@ -1089,9 +1056,7 @@ class RLEOperations:
             return await self._environments.list_environments(
                 name=name,
                 limit=limit,
-                continuation_token_parameter=(
-                    continuation_token if next_token is None else next_token
-                ),
+                continuation_token_parameter=(continuation_token if next_token is None else next_token),
                 order=order,
                 **operation_kwargs,
             )
@@ -1116,9 +1081,7 @@ class RLEOperations:
         return await self._environments.get_environment(name, **kwargs)
 
     @distributed_trace_async
-    async def get_environment_version(
-        self, name: str, version: str, **kwargs: Any
-    ) -> RLEnvironment:
+    async def get_environment_version(self, name: str, version: str, **kwargs: Any) -> RLEnvironment:
         """Get a specific version of a hosted RLE environment by name and version.
 
         :param name: Environment name. Required.
@@ -1164,9 +1127,7 @@ class RLEOperations:
             return await self._environments.list_rl_environment_versions(
                 name,
                 limit=limit,
-                continuation_token_parameter=(
-                    continuation_token if next_token is None else next_token
-                ),
+                continuation_token_parameter=(continuation_token if next_token is None else next_token),
                 order=order,
                 **operation_kwargs,
             )
@@ -1215,9 +1176,7 @@ class RLEOperations:
                 environment_name,
                 environment_version,
                 limit=limit,
-                continuation_token_parameter=(
-                    continuation_token if next_token is None else next_token
-                ),
+                continuation_token_parameter=(continuation_token if next_token is None else next_token),
                 order=order,
                 **operation_kwargs,
             )
@@ -1230,9 +1189,7 @@ class RLEOperations:
         return AsyncItemPaged(get_next, extract_data)
 
     @distributed_trace_async
-    async def delete_environment_version(
-        self, name: str, version: str, **kwargs: Any
-    ) -> None:
+    async def delete_environment_version(self, name: str, version: str, **kwargs: Any) -> None:
         """Delete a specific version of a hosted RLE environment.
 
         :param name: Environment name. Required.
@@ -1307,6 +1264,35 @@ class RLEOperations:
         token = await credential.get_token(*scopes)
         return token.token
 
+    def open_rollout_session(
+        self,
+        environment_name: str,
+        environment_version: str,
+        job_id: Optional[str] = None,
+        max_concurrent_rollouts: int = 16,
+    ) -> "AsyncRolloutSession":
+        """Create a lazy asynchronous shared Execute Rollout session.
+
+        The session owns admission and a single socket. Its per-call timeout
+        starts after concurrency admission and includes connection and execution.
+        Queue waiting remains cancellable and wakes on closure or an unknown
+        submitted outcome. Close the session before this client.
+
+        :param environment_name: Published environment name.
+        :type environment_name: str
+        :param environment_version: Exact published environment version.
+        :type environment_version: str
+        :param job_id: Optional job identifier attached to every rollout.
+        :type job_id: str or None
+        :param max_concurrent_rollouts: Global session admission limit, from 1 through 64. Default 16.
+        :type max_concurrent_rollouts: int
+        :return: A lazy asynchronous context manager with ``execute_rollout`` and async ``close``.
+        :rtype: ~azure.ai.projects.aio.operations._rollout_session_async.AsyncRolloutSession
+        """
+        from ._rollout_session_async import AsyncRolloutSession
+
+        return AsyncRolloutSession(self, environment_name, environment_version, job_id, max_concurrent_rollouts)
+
     @distributed_trace_async
     async def execute_rollout(
         self,
@@ -1318,6 +1304,7 @@ class RLEOperations:
         sampling: Optional[SamplingOptions] = None,
         rollout_id: Optional[str] = None,
         forwarded_token: Optional[str] = None,
+        transport: str = "http",
         **kwargs: Any,
     ) -> RolloutResult:
         """Run one complete rollout of a published environment version and return what it produced.
@@ -1358,11 +1345,15 @@ class RLEOperations:
         :keyword forwarded_token: Bearer token RLE forwards to Capture Proxy for Loom sampling.
          Acquired from this client's credential when omitted, which is the common case.
         :paramtype forwarded_token: str or None
+        :keyword transport: The existing HTTP transport. Use ``open_rollout_session`` for shared WebSocket execution.
+        :paramtype transport: str
         :return: The completed rollout.
         :rtype: ~azure.ai.projects.models.RolloutResult
         :raises ~azure.ai.projects.operations.RLERolloutError: If the service refused the request
          or could not complete the rollout.
         """
+        if transport != "http":
+            raise ValueError("Use open_rollout_session for WebSocket execution; execute_rollout uses HTTP.")
         if not environment_name:
             raise ValueError("environment_name is required")
         if not environment_version:

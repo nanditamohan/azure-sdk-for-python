@@ -372,6 +372,106 @@ For more information, see [Configure logging in the Azure libraries for Python](
 
 To report an issue with the client library, or request additional features, please open a [GitHub issue here](https://github.com/Azure/azure-sdk-for-python/issues). Mention the package name "azure-ai-projects" in the title or content.
 
+## Shared RLE rollout sessions (private preview)
+
+Construct the client with `allow_preview=True`. For training, open one session for the
+published environment version and share it across rollout calls:
+
+```python
+import asyncio
+from azure.ai.projects.rle import LoomPolicy
+
+policy = LoomPolicy(
+    model_name="model",
+    project_endpoint="https://account.services.ai.azure.com/api/projects/project",
+    session_id="training-session",
+    checkpoint_id="checkpoint",
+)
+
+# project_client is azure.ai.projects.aio.AIProjectClient.
+async with project_client.rle.open_rollout_session(
+    environment_name="environment",
+    environment_version="1",
+    job_id="training-job",
+    max_concurrent_rollouts=16,
+) as session:
+    results = await asyncio.gather(
+        *(
+            session.execute_rollout(
+                task=task,
+                policy=policy,
+                rollout_id=f"training-job-{index}",
+                timeout=1860,
+                max_response_bytes=8 * 1024 * 1024,
+            )
+            for index, task in enumerate(tasks)
+        )
+    )
+```
+
+Shared sessions are asynchronous only. Entry is lazy: the first execution obtains
+credentials and opens the socket. Use `await session.close()` without a context manager,
+and close the session before the project client. Existing sync and async
+`client.rle.execute_rollout(...)` retain their HTTP default and do not create a session.
+
+The SDK owns concurrency admission and a **single shared socket**. The limit defaults to 16
+and accepts integers from 1 through 64, conservatively capped at the inspected service's
+default per-socket capacity; this is not advertised or negotiated with the service.
+Sends are serialized and one receive dispatcher
+correlates out-of-order results by rollout ID. `progress_callback`, if supplied, receives
+a mapping containing `rollout_id`; it must be a lightweight synchronous callable.
+Callback exceptions and malformed progress are surfaced to the associated caller.
+
+For long jobs, the SDK stops new submissions at the age/token renewal boundary, waits
+for current pending calls to settle, then closes the old socket before opening its replacement.
+There is no simultaneous old/new connection pool. Renewal is scheduled after at most
+1740 seconds or 60 seconds before credential expiry, whichever comes first.
+Every new connection refreshes credentials.
+Credentials must report their actual expiry in `AccessToken.expires_on`. In particular,
+adapters using a synthetic short expiry to control HTTP caching should supply a session-only
+credential with the actual provider expiry, rather than forcing rotation on every call.
+Tokens with 60 seconds or less remaining are rejected before submission.
+The handshake supplies both `Authorization` and `aml-user-token`; both are redacted by
+the SDK WebSocket logger.
+
+Connections reuse the existing OpenEnv `_connect_openenv_websocket` helper:
+up to three attempts for transient connectivity failures or HTTP 408, 429, 500,
+502, 503 and 504, with per-attempt timeouts up to 25 seconds, a 90-second connection
+budget and full-jitter delays up to two and four seconds. The remaining rollout
+deadline can shorten these bounds. Authentication and certificate failures are not retried.
+These are opening-handshake retries only. Execution errors, including retryable
+admission rejections, are surfaced rather than replayed. Generic `retryable=true`
+can describe a dependency failure after work started, not just an admission rejection.
+
+An interrupted send or abrupt disconnect raises `RLERolloutUnknownOutcomeError` with
+the **original** rollout ID. There is no automatic durable status/result polling or
+execution replay. WebSocket execution uses API version `2025-11-15-preview`.
+The default `timeout=1860` begins **after SDK concurrency admission**: queue waiting
+does not consume a rollout's timeout, so a large job is not given a job-wide 1860-second
+deadline. Queue waiting remains cancellable and awakens promptly on closure or an
+unknown submitted outcome. After admission, timeout includes renewal waiting, credentials,
+opening the connection, serialized send waiting and execution.
+Timeout/cancellation before attempting to send does not submit work or itself block future admission.
+
+Deployment-drain handling is deferred in this first draft. `server-draining` control frames
+are ignored, not mistaken for rollout results. There is **no guarantee of completing a
+pending rollout across a deployment or connection interruption**. An idle closed connection
+may be replaced for later submissions only when there is no unresolved work; submitted
+disconnects remain explicit unknown outcomes.
+
+Cancellation, timeout, and session close do not cancel server execution or siblings.
+If a submitted outcome cannot be accounted for, the session stops admitting new work;
+do not create a replacement session blindly and assume that server capacity was released.
+Queued callers are awakened by closure, receiver tasks are cancelled, and socket cleanup
+is bounded to five seconds. Submitted unresolved work raises an explicit unknown-outcome
+error. An already-dispatched completion wins a cancellation or disconnect race.
+No per-rollout cancel commands are issued. `max_response_bytes` is a positive per-call safety
+budget; a larger configured budget is accepted, but the WebSocket's 8 MiB payload bound still
+applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
+
+This interface is in **2.8.0 (Unreleased)** and requires a coordinated SDK release before
+consumers can use a published 2.8.0 dependency.
+
 ## Next steps
 
 Have a look at the [Samples][samples] folder, containing fully runnable Python code for synchronous and asynchronous clients.

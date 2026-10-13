@@ -198,6 +198,8 @@ class RolloutRequest(_Model):
     :vartype task: any
     :ivar policy: Where this rollout's weights come from. Required.
     :vartype policy: ~azure.ai.projects.rle.RolloutPolicy
+    :ivar job_id: Optional training-job identifier used for durable rollout correlation.
+    :vartype job_id: str
     :ivar sampling: How this rollout's completions are sampled and rendered. Optional.
     :vartype sampling: ~azure.ai.projects.rle.SamplingOptions
     """
@@ -208,6 +210,8 @@ class RolloutRequest(_Model):
     """Opaque task record passed verbatim to the environment's reset. Required."""
     policy: RolloutPolicy = rest_field(visibility=_VISIBILITY)
     """Where this rollout's weights come from. Required."""
+    job_id: Optional[str] = rest_field(visibility=_VISIBILITY)
+    """Training-job identifier used for durable rollout correlation."""
     sampling: Optional[SamplingOptions] = rest_field(visibility=_VISIBILITY)
     """How this rollout's completions are sampled and rendered."""
 
@@ -218,6 +222,7 @@ class RolloutRequest(_Model):
         rollout_id: str,
         task: Any,
         policy: RolloutPolicy,
+        job_id: Optional[str] = None,
         sampling: Optional[SamplingOptions] = None,
     ) -> None: ...
 

@@ -14,9 +14,11 @@ sending subtly different requests.
 from __future__ import annotations
 
 import json
+import math
+import struct
 import uuid
 from typing import Any, Mapping, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from azure.core.exceptions import HttpResponseError
 from azure.core.rest import HttpRequest
@@ -28,6 +30,9 @@ from ..rle._rollout_models import RolloutPolicy, RolloutRequest, RolloutResult, 
 # the two are separate contracts on the same endpoint, and pinning the rollout route to the
 # version it was shipped under keeps a client-wide api_version override from silently moving it.
 EXECUTE_ROLLOUT_API_VERSION = "2025-11-15-preview"
+EXECUTE_ROLLOUT_SUBPROTOCOLS = ("rle.execute-rollout.v2", "rle.execute-rollout.v1")
+DEFAULT_ROLLOUT_TIMEOUT_S = 1860.0
+DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 # The classic AzureML forwarded-user-token header. RLE requires it in addition to
 # ``Authorization`` and forwards it unchanged to Capture Proxy, which presents it to Loom as a
@@ -74,6 +79,28 @@ class RLERolloutError(HttpResponseError):
         # ``message``. The parsed ``error`` is left intact for callers that read it.
         self.message = composed
         self.args = (composed,)
+
+
+class RLERolloutUnknownOutcomeError(RLERolloutError):
+    """Submitted work may still be executing; the SDK never replays it.
+
+    ``rollout_id`` is the original identifier for operator correlation. Closing or
+    cancelling local work does not cancel execution on the service.
+    """
+
+    def __init__(
+        self,
+        *,
+        rollout_id: str,
+        message: str = "The submitted rollout outcome could not be determined.",
+        rollout_status: Optional[str] = None,
+    ) -> None:
+        self.rollout_status = rollout_status
+        super().__init__(None, code="AmbiguousRolloutOutcome", message=message, rollout_id=rollout_id)
+
+
+class _RolloutConnectionLost(Exception):
+    """The connection cannot account for pending execution."""
 
 
 def build_rollout_request(
@@ -123,6 +150,7 @@ def build_rollout_body(
     policy: RolloutPolicy,
     sampling: Optional[SamplingOptions] = None,
     rollout_id: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> RolloutRequest:
     """Assemble a rollout request, generating an id when the caller did not supply one.
 
@@ -138,6 +166,8 @@ def build_rollout_body(
     :paramtype sampling: ~azure.ai.projects.models.SamplingOptions or None
     :keyword rollout_id: Caller-supplied identifier. Generated when omitted.
     :paramtype rollout_id: str or None
+    :keyword job_id: Optional job identifier attached to the request.
+    :paramtype job_id: str or None
     :return: The assembled request.
     :rtype: ~azure.ai.projects.models.RolloutRequest
     """
@@ -150,7 +180,104 @@ def build_rollout_body(
         task=task,
         policy=policy,
         sampling=sampling,
+        **({"job_id": job_id} if job_id is not None else {}),
     )
+
+
+def validate_rollout_session(environment_name: str, environment_version: str, limit: int) -> None:
+    if not environment_name or not environment_version:
+        raise ValueError("environment_name and environment_version are required")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
+        raise ValueError("max_concurrent_rollouts must be an integer between 1 and 64")
+
+
+def validate_rollout_options(timeout: float, max_response_bytes: int) -> None:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes <= 0:
+        raise ValueError("max_response_bytes must be a positive integer")
+
+
+def build_rollout_websocket_url(
+    endpoint: str, environment_name: str, environment_version: str, connection_id: str, api_version: str
+) -> str:
+    parsed = urlsplit(endpoint)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("project endpoint must use https for authenticated WebSockets")
+    path = (
+        f"/rl_environments/{quote(environment_name, safe='')}/versions/{quote(environment_version, safe='')}"
+        f"/instance_groups/_execute_rollout/instances/{quote(connection_id, safe='')}/openenv/ws"
+    )
+    query = [
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key.lower() != "api-version"
+    ]
+    query.append(("api-version", api_version))
+    return urlunsplit(("wss", parsed.netloc, parsed.path.rstrip("/") + path, urlencode(query), ""))
+
+
+def serialize_rollout_frame(message_type: str, body: RolloutRequest) -> bytes:
+    header = {"type": message_type, "rollout_id": body.rollout_id}
+    if body.job_id:
+        header["job_id"] = body.job_id
+    encoded = json.dumps(header, separators=(",", ":")).encode()
+    payload = json.dumps(body.as_dict(), separators=(",", ":")).encode()
+    if len(encoded) > 4096 or len(payload) > DEFAULT_MAX_RESPONSE_BYTES:
+        raise ValueError("Execute Rollout request exceeded the 4 KiB header or 8 MiB payload limit")
+    return struct.pack(">I", len(encoded)) + encoded + payload
+
+
+def _unique_header(pairs: Any) -> dict[str, Any]:
+    header: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in header:
+            raise ValueError("Execute Rollout returned duplicate frame header keys")
+        header[key] = value
+    return header
+
+
+def deserialize_rollout_frame(message: Any, max_response_bytes: int) -> "tuple[Mapping[str, Any], bytes]":
+    if not isinstance(message, bytes) or len(message) < 4:
+        raise ValueError("Execute Rollout returned an invalid binary frame")
+    size = struct.unpack(">I", message[:4])[0]
+    if not 0 < size <= 4096 or len(message) < 4 + size:
+        raise ValueError("Execute Rollout returned an invalid frame header")
+    header = json.loads(message[4 : 4 + size], object_pairs_hook=_unique_header)
+    if not isinstance(header, Mapping) or not isinstance(header.get("type"), str):
+        raise ValueError("Execute Rollout returned an invalid frame header")
+    if header["type"] != "server-draining" and not isinstance(header.get("rollout_id"), str):
+        raise ValueError("Execute Rollout returned a frame without a rollout identifier")
+    payload = message[4 + size :]
+    if len(payload) > min(max_response_bytes, DEFAULT_MAX_RESPONSE_BYTES):
+        raise ValueError("Execute Rollout response exceeded max_response_bytes or the 8 MiB protocol limit")
+    return header, payload
+
+
+def deserialize_rollout_payload(payload: bytes, rollout_id: str) -> RolloutResult:
+    value = json.loads(payload)
+    if not isinstance(value, Mapping):
+        raise ValueError("Execute Rollout returned a non-object result")
+    result = RolloutResult(value)
+    if result.rollout_id != rollout_id:
+        raise ValueError("Execute Rollout returned a result for a different rollout")
+    return result
+
+
+def rollout_progress(payload: bytes, rollout_id: str) -> Mapping[str, Any]:
+    value = json.loads(payload)
+    if not isinstance(value, Mapping):
+        raise ValueError("Execute Rollout returned non-object progress")
+    return {**value, "rollout_id": rollout_id}
+
+
+def rollout_error_from_payload(payload: bytes, rollout_id: str) -> RLERolloutError:
+    value = json.loads(payload)
+    if (
+        not isinstance(value, Mapping)
+        or not isinstance(value.get("code"), str)
+        or not isinstance(value.get("message"), str)
+    ):
+        raise ValueError("Execute Rollout returned an invalid error")
+    return RLERolloutError(None, code=value.get("code"), message=value.get("message"), rollout_id=rollout_id)
 
 
 def deserialize_rollout_response(response: Any, rollout_id: str) -> RolloutResult:
