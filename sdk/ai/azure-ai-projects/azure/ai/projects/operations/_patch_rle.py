@@ -69,7 +69,7 @@ from ..models import (
     RLEStepRequest,
     RLEStepResult,
 )
-from ..rle._rollout_models import RolloutPolicy, RolloutResult, SamplingOptions
+from ..rle._rollout_models import HarnessConfiguration, RolloutPolicy, RolloutResult, SamplingOptions
 from ._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
     RLERolloutError,
@@ -1558,7 +1558,7 @@ class RLEOperations:
         task: Any,
         policy: RolloutPolicy,
         sampling: Optional[SamplingOptions] = None,
-        harness: Optional[dict[str, Any]] = None,
+        harness: Optional[HarnessConfiguration] = None,
         rollout_id: Optional[str] = None,
         forwarded_token: Optional[str] = None,
         **kwargs: Any,
@@ -1595,8 +1595,9 @@ class RLEOperations:
         :keyword sampling: How completions are sampled and rendered. Optional; the service picks a
          compatible renderer when omitted. Not accepted with a Foundry policy.
         :paramtype sampling: ~azure.ai.projects.models.SamplingOptions or None
-        :keyword harness: Optional per-request harness override.
-        :paramtype harness: dict[str, any] or None
+        :keyword harness: Callable target for this rollout only, for example a BYOH agent URL.
+         Optional; the environment version's stored harness is used when omitted.
+        :paramtype harness: ~azure.ai.projects.rle.HarnessConfiguration or None
         :keyword rollout_id: Caller-supplied identifier, reserved within the project and returned
          unchanged. A bare-hex UUID is generated when omitted.
         :paramtype rollout_id: str or None

@@ -11,6 +11,7 @@ import logging
 import struct
 import time
 from types import SimpleNamespace
+from typing import Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -30,7 +31,7 @@ from azure.ai.projects.operations._patch_rle_rollout import (
     deserialize_rollout_frame,
     serialize_rollout_frame,
 )
-from azure.ai.projects.rle import LoomPolicy
+from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy
 
 
 class _Credential:
@@ -89,14 +90,33 @@ def _complete(socket, rollout_id):
     socket.incoming.put_nowait(_frame("completed", rollout_id, {"rollout_id": rollout_id, "reward": 1.0}))
 
 
-def test_http_request_preserves_harness_override():
-    harness = {"type": "gym"}
+def test_http_request_preserves_typed_harness_override():
+    harness = HarnessConfiguration(type="gym")
     body = build_rollout_body(task={"row": 1}, policy=_policy(), harness=harness)
-    harness["type"] = "changed"
     request = build_rollout_request(
         environment_name="environment", environment_version="1", body=body, forwarded_token="test-token"
     )
     assert json.loads(request.content)["harness"] == {"type": "gym"}
+
+
+def test_rollout_request_uses_typed_harness_with_job_correlation():
+    body = build_rollout_body(
+        task={"row": 1}, policy=_policy(), harness=HarnessConfiguration(type="gym"), job_id="job", rollout_id="rollout"
+    )
+    assert isinstance(body.harness, HarnessConfiguration)
+    assert body.as_dict()["harness"] == {"type": "gym"}
+    assert body.job_id == "job"
+    assert body.rollout_id == "rollout"
+
+
+@pytest.mark.parametrize("operation", [
+    RLEOperations.execute_rollout,
+    transport.RLEOperations.execute_rollout,
+    AsyncRolloutClient.execute_rollout,
+    build_rollout_body,
+])
+def test_rollout_operations_share_one_typed_harness_contract(operation):
+    assert get_type_hints(operation)["harness"] == Optional[HarnessConfiguration]
 
 
 def _session(monkeypatch, sockets, limit=16, **options):
@@ -184,9 +204,12 @@ async def test_cancelled_close_still_closes_socket(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [
     None,
-    {"type": "gym"},
-    {"type": "byoh", "endpoint": "https://account.test/api/projects/project/agents/agent", "protocol": "responses"},
-    {"type": "byoh", "endpoint": "https://harness.example.test/run", "protocol": "rle-invocation"},
+    HarnessConfiguration(type="gym"),
+    HarnessConfiguration(
+        type="byoh", endpoint="https://account.test/api/projects/project/agents/agent", protocol="responses"
+    ),
+    HarnessConfiguration(type="byoh", endpoint="https://harness.example.test/run", protocol="rle-invocation"),
+    HarnessConfiguration(type="package", name="opencode"),
 ])
 async def test_harness_override_is_preserved_in_execute_frame(monkeypatch, harness):
     socket = _Socket()
@@ -199,7 +222,7 @@ async def test_harness_override_is_preserved_in_execute_frame(monkeypatch, harne
         if harness is None:
             assert "harness" not in body
         else:
-            assert body["harness"] == harness
+            assert body["harness"] == harness.as_dict()
         _complete(socket, header["rollout_id"])
         await task
 

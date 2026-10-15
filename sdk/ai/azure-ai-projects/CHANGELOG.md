@@ -1,5 +1,15 @@
 # Release History
 
+## 2.7.0b4 (Unreleased)
+
+### Features Added
+
+* Integrated the latest RLE harness support from `main`. HTTP operations and the shared async rollout client use the same `HarnessConfiguration` request model while preserving job correlation.
+
+### Breaking Changes
+
+* Standardized per-rollout `harness` arguments on `HarnessConfiguration`. Callers using dictionaries should construct the typed model instead.
+
 ## 2.7.0b3 (Unreleased)
 
 ### Bugs Fixed
@@ -30,6 +40,8 @@
 * Added async-only `rle.get_rollout_client(environment_name, environment_version, job_id=None, max_concurrent_rollouts=16)` with one shared Execute Rollout socket, SDK-owned admission, serialized sends, rollout-ID dispatch and correlated progress. It reuses the existing OpenEnv authenticated connection and bounded handshake retries. Age/credential renewal pauses new submissions until pending calls settle, then replaces the socket without an overlapping connection pool. Existing sync and async `execute_rollout` retain their HTTP defaults.
 * Submitted disconnect, timeout, cancellation and closure raise `RLERolloutUnknownOutcomeError` with the original rollout ID and conservatively stop new admission. No execution replay, automatic durable recovery, drain-aware routing or server cancellation is issued; interrupted pending work is not guaranteed to complete. Closure and unknown outcomes awaken queued callers, and local socket cleanup is bounded. The default 1860-second call timeout starts after SDK concurrency admission; queue waiting does not consume it and remains cancellable.
 * WebSocket logs redact both identity headers. Positive caller response budgets above 8 MiB are accepted while protocol payloads remain capped at 8 MiB and headers at 4 KiB; duplicate frame header keys are rejected.
+
+* Added `rle.HarnessConfiguration` and an optional `harness` keyword on `rle.execute_rollout()` to choose the callable target for one rollout: `gym` (default), `byoh` with an agent `endpoint` and `protocol`, or `package` with a `name`. For `protocol="responses"`, pass the Foundry agent URL (`{project_endpoint}/agents/{agent_name}`); the service appends the Responses protocol path.
 
 ### Dependency update
 

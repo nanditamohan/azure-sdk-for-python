@@ -34,6 +34,7 @@ from ..models._models import (
 )
 from ._rollout_models import (
     FoundryDeploymentPolicy,
+    HarnessConfiguration,
     LoomPolicy,
     RolloutEpisode,
     RolloutPolicy,
@@ -51,6 +52,7 @@ __all__ = [
     "EnvironmentState",
     "EnvironmentVersionBump",
     "FoundryDeploymentPolicy",
+    "HarnessConfiguration",
     "Instance",
     "InstanceGroup",
     "InstanceGroupResourceProfile",

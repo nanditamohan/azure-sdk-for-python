@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.rle import FoundryDeploymentPolicy, LoomPolicy, SamplingOptions
+from azure.ai.projects.aio import AIProjectClient as AsyncAIProjectClient
+from azure.ai.projects.rle import FoundryDeploymentPolicy, HarnessConfiguration, LoomPolicy, SamplingOptions
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
@@ -31,6 +32,14 @@ class _FakeCredential:
         return AccessToken(_TOKEN, 9999999999)
 
     def close(self) -> None:
+        pass
+
+
+class _AsyncFakeCredential(_FakeCredential):
+    async def get_token(self, *scopes: str, **kwargs: Any) -> AccessToken:
+        return super().get_token(*scopes, **kwargs)
+
+    async def close(self) -> None:
         pass
 
 
@@ -126,6 +135,38 @@ def test_posts_to_the_version_pinned_action_url(rollout_server):
     path = recorder.requests[0]["path"]
     assert "/api/projects/proj/rl_environments/math_rl/versions/1.0.6:executeRollout" in path
     assert f"api-version={EXECUTE_ROLLOUT_API_VERSION}" in path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("harness", [
+    None,
+    HarnessConfiguration(type="gym"),
+    HarnessConfiguration(
+        type="byoh", endpoint="https://account.test/api/projects/project/agents/agent", protocol="responses"
+    ),
+    HarnessConfiguration(type="byoh", endpoint="https://harness.example.test/run", protocol="rle-invocation"),
+    HarnessConfiguration(type="package", name="opencode"),
+])
+async def test_http_harness_override_on_both_clients(rollout_server, asynchronous, harness):
+    recorder, endpoint = rollout_server
+    recorder.body = {"rollout_id": "fixed"}
+    if asynchronous:
+        async with AsyncAIProjectClient(
+            endpoint=endpoint, credential=_AsyncFakeCredential(), allow_preview=True
+        ) as client:
+            await client.rle.execute_rollout(
+                "environment", "1", task={}, policy=_policy(), harness=harness,
+                rollout_id="fixed", enforce_https=False,
+            )
+    else:
+        with _client(endpoint) as client:
+            _rollout(client, "environment", "1", task={}, policy=_policy(), harness=harness, rollout_id="fixed")
+    body = recorder.requests[0]["body"]
+    if harness is None:
+        assert "harness" not in body
+    else:
+        assert body["harness"] == harness.as_dict()
 
 
 def test_forwards_the_caller_token_in_both_headers(rollout_server):
@@ -402,3 +443,33 @@ def test_a_serialised_foundry_policy_deserialises_back_to_its_concrete_type():
 
     assert isinstance(received.policy, FoundryDeploymentPolicy)
     assert received.policy.deployment_name == "gpt-5-mini"
+
+
+def test_harness_is_sent_when_given():
+    harness = HarnessConfiguration(
+        type="byoh",
+        protocol="responses",
+        endpoint="https://acct.services.ai.azure.com/api/projects/proj/agents/my-agent",
+    )
+
+    body = build_rollout_body(task={}, policy=_policy(), harness=harness).as_dict()
+
+    assert body["harness"] == {
+        "type": "byoh",
+        "protocol": "responses",
+        "endpoint": "https://acct.services.ai.azure.com/api/projects/proj/agents/my-agent",
+    }
+
+
+def test_harness_is_absent_rather_than_null_when_unset():
+    body = build_rollout_body(task={}, policy=_policy())
+
+    assert "harness" not in body.as_dict()
+
+
+def test_a_package_harness_carries_only_its_name():
+    body = build_rollout_body(
+        task={}, policy=_policy(), harness=HarnessConfiguration(type="package", name="opencode")
+    ).as_dict()
+
+    assert body["harness"] == {"type": "package", "name": "opencode"}

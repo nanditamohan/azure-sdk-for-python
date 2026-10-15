@@ -379,7 +379,7 @@ published environment version and share it across rollout calls:
 
 ```python
 import asyncio
-from azure.ai.projects.rle import LoomPolicy
+from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy
 
 policy = LoomPolicy(
     model_name="model",
@@ -400,6 +400,7 @@ async with project_client.rle.get_rollout_client(
             session.execute_rollout(
                 task=task,
                 policy=policy,
+                harness=HarnessConfiguration(type="gym"),
                 rollout_id=f"training-job-{index}",
                 timeout=1860,
                 max_response_bytes=8 * 1024 * 1024,
@@ -413,6 +414,11 @@ Shared sessions are asynchronous only. Entry is lazy: the first execution obtain
 credentials and opens the socket. Use `await session.close()` without a context manager,
 and close the session before the project client. Existing sync and async
 `client.rle.execute_rollout(...)` retain their HTTP default and do not create a session.
+
+Both HTTP operations and the shared rollout client use `HarnessConfiguration`
+for an optional per-rollout override. Omitting it uses the environment
+version's stored harness. For BYOH Responses, pass the agent base URL as `endpoint`;
+the service adds the Responses protocol path. Package execution requires service support.
 
 Outbound execute messages are limited to 4 MiB including their length prefix,
 header and payload, with a separate 4 KiB header limit. Oversized requests fail

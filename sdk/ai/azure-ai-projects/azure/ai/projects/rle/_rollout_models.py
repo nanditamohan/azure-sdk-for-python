@@ -28,6 +28,7 @@ __all__ = [
     "LoomPolicy",
     "FoundryDeploymentPolicy",
     "SamplingOptions",
+    "HarnessConfiguration",
     "RolloutRequest",
     "RolloutResult",
     "RolloutEpisode",
@@ -184,6 +185,57 @@ class SamplingOptions(_Model):
         super().__init__(*args, **kwargs)
 
 
+class HarnessConfiguration(_Model):
+    """The callable target that acts on the task for one rollout.
+
+    ``type`` selects the target. ``gym`` (the service default) drives the environment's own
+    Gym/OpenEnv loop. ``byoh`` calls an agent you host at ``endpoint``. ``package`` runs a named
+    harness package and takes ``name``. ``name`` is valid only with ``package``; ``endpoint`` and
+    ``protocol`` only with ``byoh``.
+
+    For ``protocol="responses"`` the ``endpoint`` is the Foundry agent URL
+    ``{project_endpoint}/agents/{agent_name}``; the service appends the Responses protocol path.
+
+    :ivar type: ``gym``, ``byoh`` or ``package``. Required.
+    :vartype type: str
+    :ivar name: Harness package name. Only with ``package``.
+    :vartype name: str
+    :ivar endpoint: Agent URL. Only with ``byoh``.
+    :vartype endpoint: str
+    :ivar protocol: ``responses`` or ``rle-invocation``. Only with ``byoh``.
+    :vartype protocol: str
+    """
+
+    type: str = rest_field(visibility=_VISIBILITY)
+    """``gym``, ``byoh`` or ``package``. Required."""
+    name: Optional[str] = rest_field(visibility=_VISIBILITY)
+    """Harness package name. Only with ``package``."""
+    endpoint: Optional[str] = rest_field(visibility=_VISIBILITY)
+    """Agent URL. Only with ``byoh``."""
+    protocol: Optional[str] = rest_field(visibility=_VISIBILITY)
+    """``responses`` or ``rle-invocation``. Only with ``byoh``."""
+
+    @overload
+    def __init__(
+        self,
+        *,
+        type: str,
+        name: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        protocol: Optional[str] = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """
+        :param mapping: raw JSON to initialize the model.
+        :type mapping: Mapping[str, Any]
+        """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+
 class RolloutRequest(_Model):
     """Request body for one Execute Rollout call.
 
@@ -202,8 +254,9 @@ class RolloutRequest(_Model):
     :vartype job_id: str
     :ivar sampling: How this rollout's completions are sampled and rendered. Optional.
     :vartype sampling: ~azure.ai.projects.rle.SamplingOptions
-    :ivar harness: Optional per-request harness override, forwarded unchanged to the service.
-    :vartype harness: dict[str, any]
+    :ivar harness: Optional callable target for this rollout only. The environment version's
+     stored harness is used when omitted.
+    :vartype harness: ~azure.ai.projects.rle.HarnessConfiguration
     """
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
@@ -216,8 +269,8 @@ class RolloutRequest(_Model):
     """Training-job identifier used for durable rollout correlation."""
     sampling: Optional[SamplingOptions] = rest_field(visibility=_VISIBILITY)
     """How this rollout's completions are sampled and rendered."""
-    harness: Optional[dict[str, Any]] = rest_field(visibility=_VISIBILITY)
-    """Per-request harness override; omitted to use the environment configuration."""
+    harness: Optional[HarnessConfiguration] = rest_field(visibility=_VISIBILITY)
+    """Optional callable target for this rollout only; the version's stored harness when omitted."""
 
     @overload
     def __init__(
@@ -228,7 +281,7 @@ class RolloutRequest(_Model):
         policy: RolloutPolicy,
         job_id: Optional[str] = None,
         sampling: Optional[SamplingOptions] = None,
-        harness: Optional[dict[str, Any]] = None,
+        harness: Optional[HarnessConfiguration] = None,
     ) -> None: ...
 
     @overload

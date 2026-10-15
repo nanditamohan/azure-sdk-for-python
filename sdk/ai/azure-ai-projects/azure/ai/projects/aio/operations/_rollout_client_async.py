@@ -32,7 +32,7 @@ from ...operations._patch_rle_rollout import (
     validate_rollout_options,
     validate_rollout_session,
 )
-from ...rle._rollout_models import RolloutPolicy, RolloutResult, SamplingOptions
+from ...rle._rollout_models import HarnessConfiguration, RolloutPolicy, RolloutResult, SamplingOptions
 
 
 class _Pending:
@@ -263,7 +263,7 @@ class AsyncRolloutClient:
         task: Any,
         policy: RolloutPolicy,
         sampling: Optional[SamplingOptions] = None,
-        harness: Optional[Mapping[str, Any]] = None,
+        harness: Optional[HarnessConfiguration] = None,
         rollout_id: Optional[str] = None,
         timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -283,7 +283,7 @@ class AsyncRolloutClient:
         :keyword sampling: Optional sampling configuration.
         :paramtype sampling: ~azure.ai.projects.rle.SamplingOptions or None
         :keyword harness: Optional per-request harness override.
-        :paramtype harness: mapping[str, any] or None
+        :paramtype harness: ~azure.ai.projects.rle.HarnessConfiguration or None
         :keyword rollout_id: Optional original identifier; generated when omitted.
         :paramtype rollout_id: str or None
         :keyword timeout: Post-admission timeout in seconds. Default 1860.
