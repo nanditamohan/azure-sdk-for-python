@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
 PUBLIC_BRANCH = "rle-dev-releases"
-PUBLIC_PATH = "sdk/ai/azure-ai-projects/dist/rle"
+PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle"
 MANIFEST_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/"
     f"{PUBLIC_BRANCH}/{PUBLIC_PATH}/registry.json"

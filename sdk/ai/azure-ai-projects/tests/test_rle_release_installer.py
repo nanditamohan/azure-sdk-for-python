@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-_PATH = Path(__file__).parents[1] / "dist" / "rle" / "install_rle_sdk.py"
+_PATH = Path(__file__).parents[1] / "rle" / "install_rle_sdk.py"
 _SPEC = importlib.util.spec_from_file_location("rle_release_installer", _PATH)
 installer = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = installer
@@ -18,7 +18,7 @@ def _manifest():
         "schema_version": 1, "package": "azure-ai-projects", "channel": "rle-dev",
         "latest": "2.7.0b2", "versions": {"2.7.0b2": {
             "filename": filename,
-            "url": f"https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/dist/rle/wheels/2.7.0b2/{filename}",
+            "url": f"https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/rle/wheels/2.7.0b2/{filename}",
             "sha256": hashlib.sha256(b"wheel").hexdigest(),
         }},
     }

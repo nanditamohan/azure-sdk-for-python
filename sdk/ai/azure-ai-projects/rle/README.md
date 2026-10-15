@@ -5,7 +5,7 @@ distribution uses the `Azure/azure-sdk-for-python` branch `rle-dev-releases`.
 Publishing is a separate, human-owned step; pushing this SDK PR does not publish
 an artifact to the public repository.
 
-Publish these files under `sdk/ai/azure-ai-projects/dist/rle`:
+Publish these files under `sdk/ai/azure-ai-projects/rle`, matching public PR #49488:
 
 - `install_rle_sdk.py`
 - `registry.json`
@@ -20,7 +20,7 @@ For a development installation:
 
 ```bash
 curl --fail --location \
-  https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/dist/rle/install_rle_sdk.py \
+  https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/rle/install_rle_sdk.py \
   --output install_rle_sdk.py
 python install_rle_sdk.py --version 2.7.0b2
 ```
