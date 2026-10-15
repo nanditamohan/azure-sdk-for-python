@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-_PATH = Path(__file__).parents[1] / "rle" / "install_rle_sdk.py"
+_PATH = Path(__file__).parents[1] / "dist" / "rle" / "install_rle_sdk.py"
 _SPEC = importlib.util.spec_from_file_location("rle_release_installer", _PATH)
 installer = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = installer
@@ -13,19 +13,19 @@ _SPEC.loader.exec_module(installer)
 
 
 def _manifest():
-    filename = "azure_ai_projects-2.8.0-py3-none-any.whl"
+    filename = "azure_ai_projects-2.7.0b2-py3-none-any.whl"
     return {
         "schema_version": 1, "package": "azure-ai-projects", "channel": "rle-dev",
-        "latest": "2.8.0", "versions": {"2.8.0": {
+        "latest": "2.7.0b2", "versions": {"2.7.0b2": {
             "filename": filename,
-            "url": f"https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/rle/wheels/2.8.0/{filename}",
+            "url": f"https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/dist/rle/wheels/2.7.0b2/{filename}",
             "sha256": hashlib.sha256(b"wheel").hexdigest(),
         }},
     }
 
 
 def test_resolve_latest_and_explicit():
-    assert installer.resolve_release(_manifest()) == installer.resolve_release(_manifest(), "2.8.0")
+    assert installer.resolve_release(_manifest()) == installer.resolve_release(_manifest(), "2.7.0b2")
 
 
 @pytest.mark.parametrize("field,value", [
@@ -35,7 +35,7 @@ def test_resolve_latest_and_explicit():
 ])
 def test_reject_invalid_artifact(field, value):
     manifest = _manifest()
-    manifest["versions"]["2.8.0"][field] = value
+    manifest["versions"]["2.7.0b2"][field] = value
     with pytest.raises(ValueError):
         installer.resolve_release(manifest)
 

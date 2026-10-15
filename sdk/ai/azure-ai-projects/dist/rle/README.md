@@ -1,28 +1,28 @@
-# RLE development SDK registry
+# RLE development SDK beta registry
 
 This is the development counterpart of the `rle-releases` registry. Public
 distribution uses the `Azure/azure-sdk-for-python` branch `rle-dev-releases`.
 Publishing is a separate, human-owned step; pushing this SDK PR does not publish
 an artifact to the public repository.
 
-Publish these files under `sdk/ai/azure-ai-projects/rle`:
+Publish these files under `sdk/ai/azure-ai-projects/dist/rle`:
 
 - `install_rle_sdk.py`
 - `registry.json`
-- `wheels/2.8.0/azure_ai_projects-2.8.0-py3-none-any.whl`
+- `wheels/2.7.0b2/azure_ai_projects-2.7.0b2-py3-none-any.whl`
 
-The registry pins the wheel checksum. Rebuilding development version `2.8.0`
-requires replacing both the wheel and its registry checksum in the same commit.
-The installer explicitly reinstalls the verified wheel even when the installed
-package version is unchanged.
+The registry pins the wheel checksum. This build uses `2.7.0b2`, following
+`2.7.0b1` in the existing `rle-releases` registry. Subsequent development builds
+should increment the beta number and update the registry checksum. The installer
+also explicitly reinstalls the verified wheel if the installed version matches.
 
 For a development installation:
 
 ```bash
 curl --fail --location \
-  https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/rle/install_rle_sdk.py \
+  https://raw.githubusercontent.com/Azure/azure-sdk-for-python/rle-dev-releases/sdk/ai/azure-ai-projects/dist/rle/install_rle_sdk.py \
   --output install_rle_sdk.py
-python install_rle_sdk.py --version 2.8.0
+python install_rle_sdk.py --version 2.7.0b2
 ```
 
 Use `--requirements runtime-requirements.txt` to install command-job dependencies

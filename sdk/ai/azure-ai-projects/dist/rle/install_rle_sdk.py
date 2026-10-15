@@ -1,4 +1,4 @@
-"""Resolve, verify and install a development RLE SDK wheel."""
+"""Resolve, verify and install a development RLE SDK beta wheel."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 PUBLIC_REPOSITORY = "Azure/azure-sdk-for-python"
 PUBLIC_BRANCH = "rle-dev-releases"
-PUBLIC_PATH = "sdk/ai/azure-ai-projects/rle"
+PUBLIC_PATH = "sdk/ai/azure-ai-projects/dist/rle"
 MANIFEST_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_REPOSITORY}/"
     f"{PUBLIC_BRANCH}/{PUBLIC_PATH}/registry.json"

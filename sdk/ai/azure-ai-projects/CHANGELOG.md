@@ -1,6 +1,6 @@
 # Release History
 
-## 2.8.0 (Unreleased)
+## 2.7.0b2 (Unreleased)
 
 ### Features Added
 
