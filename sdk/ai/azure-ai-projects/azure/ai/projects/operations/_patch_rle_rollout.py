@@ -21,7 +21,13 @@ from urllib.parse import quote
 from azure.core.exceptions import HttpResponseError
 from azure.core.rest import HttpRequest
 
-from ..rle._rollout_models import RolloutPolicy, RolloutRequest, RolloutResult, SamplingOptions
+from ..rle._rollout_models import (
+    HarnessConfiguration,
+    RolloutPolicy,
+    RolloutRequest,
+    RolloutResult,
+    SamplingOptions,
+)
 
 # The Foundry data plane gates ``:executeRollout`` on this preview api-version. It is
 # deliberately not ``config.api_version`` (``v1``), which the instance-level RLE routes use:
@@ -122,6 +128,7 @@ def build_rollout_body(
     task: Any,
     policy: RolloutPolicy,
     sampling: Optional[SamplingOptions] = None,
+    harness: Optional[HarnessConfiguration] = None,
     rollout_id: Optional[str] = None,
 ) -> RolloutRequest:
     """Assemble a rollout request, generating an id when the caller did not supply one.
@@ -136,6 +143,9 @@ def build_rollout_body(
     :paramtype policy: ~azure.ai.projects.models.RolloutPolicy
     :keyword sampling: How completions are sampled and rendered.
     :paramtype sampling: ~azure.ai.projects.models.SamplingOptions or None
+    :keyword harness: Callable target for this rollout only. The version's stored harness is used
+     when omitted.
+    :paramtype harness: ~azure.ai.projects.rle.HarnessConfiguration or None
     :keyword rollout_id: Caller-supplied identifier. Generated when omitted.
     :paramtype rollout_id: str or None
     :return: The assembled request.
@@ -150,6 +160,7 @@ def build_rollout_body(
         task=task,
         policy=policy,
         sampling=sampling,
+        harness=harness,
     )
 
 

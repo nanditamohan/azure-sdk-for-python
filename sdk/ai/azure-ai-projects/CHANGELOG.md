@@ -14,6 +14,8 @@
 * RLE client types now live in `azure.ai.projects.rle` without the `RLE` prefix, for example `rle.Instance`, `rle.InstanceStatus`, `rle.StepResult`, `rle.RolloutRequest`, `rle.LoomPolicy` and `rle.FoundryDeploymentPolicy`. The generated types remain importable from `azure.ai.projects.models` for the generated operations but are no longer listed in its `__all__`.
 * Added `FoundryDeploymentPolicy`, which lets `rle.execute_rollout()` sample a model deployment in the project for eval instead of a Loom checkpoint. It needs only `deployment_name` and `project_endpoint`, uses the client's own credential, and returns a text-level, non-trainable result. Use `LoomPolicy` for training.
 
+* Added `rle.HarnessConfiguration` and an optional `harness` keyword on `rle.execute_rollout()` to choose the callable target for one rollout: `gym` (default), `byoh` with an agent `endpoint` and `protocol`, or `package` with a `name`. For `protocol="responses"`, pass the Foundry agent URL (`{project_endpoint}/agents/{agent_name}`); the service appends the Responses protocol path.
+
 ### Dependency update
 
 * Added the optional `rle` dependency group, which installs OpenEnv 0.6 and FastMCP 3 for authoring Foundry RLE environments.
