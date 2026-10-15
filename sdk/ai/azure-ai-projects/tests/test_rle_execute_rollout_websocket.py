@@ -25,6 +25,8 @@ from azure.ai.projects.operations import RLEOperations, RLERolloutError, RLERoll
 from azure.ai.projects.operations._patch_rle import _WEBSOCKET_LOGGER
 from azure.ai.projects.operations._patch_rle_rollout import (
     DEFAULT_MAX_RESPONSE_BYTES,
+    build_rollout_body,
+    build_rollout_request,
     deserialize_rollout_frame,
 )
 from azure.ai.projects.rle import LoomPolicy
@@ -86,6 +88,16 @@ def _complete(socket, rollout_id):
     socket.incoming.put_nowait(_frame("completed", rollout_id, {"rollout_id": rollout_id, "reward": 1.0}))
 
 
+def test_http_request_preserves_harness_override():
+    harness = {"type": "Gym", "subtype": "OpenEnv"}
+    body = build_rollout_body(task={"row": 1}, policy=_policy(), harness=harness)
+    harness["subtype"] = "changed"
+    request = build_rollout_request(
+        environment_name="environment", environment_version="1", body=body, forwarded_token="test-token"
+    )
+    assert json.loads(request.content)["harness"] == {"type": "Gym", "subtype": "OpenEnv"}
+
+
 def _session(monkeypatch, sockets, limit=16):
     credential = _Credential()
     config = SimpleNamespace(
@@ -105,6 +117,29 @@ def _session(monkeypatch, sockets, limit=16):
 
 async def _sent(socket):
     return await asyncio.wait_for(socket.sent.get(), timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [
+    None,
+    {"type": "Gym", "subtype": "OpenEnv"},
+    {"type": "Harness", "subtype": "HostedAgent", "agent_name": "agent", "agent_version": "7"},
+    {"type": "Harness", "subtype": "BYOH", "invocation_url": "https://harness.example.test/run"},
+])
+async def test_harness_override_is_preserved_in_execute_frame(monkeypatch, harness):
+    socket = _Socket()
+    session, _, _ = _session(monkeypatch, [socket])
+    async with session:
+        task = asyncio.create_task(session.execute_rollout(task={"row": 1}, policy=_policy(), harness=harness))
+        header, payload = await _sent(socket)
+        body = json.loads(payload)
+        assert header["job_id"] == body["job_id"] == "job"
+        if harness is None:
+            assert "harness" not in body
+        else:
+            assert body["harness"] == harness
+        _complete(socket, header["rollout_id"])
+        await task
 
 
 @pytest.mark.asyncio

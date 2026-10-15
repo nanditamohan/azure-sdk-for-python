@@ -1302,6 +1302,7 @@ class RLEOperations:
         task: Any,
         policy: RolloutPolicy,
         sampling: Optional[SamplingOptions] = None,
+        harness: Optional[dict[str, Any]] = None,
         rollout_id: Optional[str] = None,
         forwarded_token: Optional[str] = None,
         transport: str = "http",
@@ -1339,6 +1340,8 @@ class RLEOperations:
         :keyword sampling: How completions are sampled and rendered. Optional; the service picks a
          compatible renderer when omitted. Not accepted with a Foundry policy.
         :paramtype sampling: ~azure.ai.projects.models.SamplingOptions or None
+        :keyword harness: Optional per-request harness override.
+        :paramtype harness: dict[str, any] or None
         :keyword rollout_id: Caller-supplied identifier, reserved within the project and returned
          unchanged. A bare-hex UUID is generated when omitted.
         :paramtype rollout_id: str or None
@@ -1363,6 +1366,7 @@ class RLEOperations:
             task=task,
             policy=policy,
             sampling=sampling,
+            harness=harness,
             rollout_id=rollout_id,
         )
         request = build_rollout_request(

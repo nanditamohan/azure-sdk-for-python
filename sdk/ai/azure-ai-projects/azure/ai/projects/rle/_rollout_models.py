@@ -202,6 +202,8 @@ class RolloutRequest(_Model):
     :vartype job_id: str
     :ivar sampling: How this rollout's completions are sampled and rendered. Optional.
     :vartype sampling: ~azure.ai.projects.rle.SamplingOptions
+    :ivar harness: Optional per-request harness override, forwarded unchanged to the service.
+    :vartype harness: dict[str, any]
     """
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
@@ -214,6 +216,8 @@ class RolloutRequest(_Model):
     """Training-job identifier used for durable rollout correlation."""
     sampling: Optional[SamplingOptions] = rest_field(visibility=_VISIBILITY)
     """How this rollout's completions are sampled and rendered."""
+    harness: Optional[dict[str, Any]] = rest_field(visibility=_VISIBILITY)
+    """Per-request harness override; omitted to use the environment configuration."""
 
     @overload
     def __init__(
@@ -224,6 +228,7 @@ class RolloutRequest(_Model):
         policy: RolloutPolicy,
         job_id: Optional[str] = None,
         sampling: Optional[SamplingOptions] = None,
+        harness: Optional[dict[str, Any]] = None,
     ) -> None: ...
 
     @overload

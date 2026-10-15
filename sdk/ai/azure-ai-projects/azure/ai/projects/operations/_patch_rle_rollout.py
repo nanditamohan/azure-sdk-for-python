@@ -151,6 +151,7 @@ def build_rollout_body(
     sampling: Optional[SamplingOptions] = None,
     rollout_id: Optional[str] = None,
     job_id: Optional[str] = None,
+    harness: Optional[Mapping[str, Any]] = None,
 ) -> RolloutRequest:
     """Assemble a rollout request, generating an id when the caller did not supply one.
 
@@ -168,6 +169,8 @@ def build_rollout_body(
     :paramtype rollout_id: str or None
     :keyword job_id: Optional job identifier attached to the request.
     :paramtype job_id: str or None
+    :keyword harness: Optional per-request harness override.
+    :paramtype harness: mapping[str, any] or None
     :return: The assembled request.
     :rtype: ~azure.ai.projects.models.RolloutRequest
     """
@@ -181,6 +184,7 @@ def build_rollout_body(
         policy=policy,
         sampling=sampling,
         **({"job_id": job_id} if job_id is not None else {}),
+        **({"harness": dict(harness)} if harness is not None else {}),
     )
 
 

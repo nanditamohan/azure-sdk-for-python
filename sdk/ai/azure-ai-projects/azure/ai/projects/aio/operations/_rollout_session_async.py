@@ -246,6 +246,7 @@ class AsyncRolloutSession:
         task: Any,
         policy: RolloutPolicy,
         sampling: Optional[SamplingOptions] = None,
+        harness: Optional[Mapping[str, Any]] = None,
         rollout_id: Optional[str] = None,
         timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -264,6 +265,8 @@ class AsyncRolloutSession:
         :paramtype policy: ~azure.ai.projects.rle.RolloutPolicy
         :keyword sampling: Optional sampling configuration.
         :paramtype sampling: ~azure.ai.projects.rle.SamplingOptions or None
+        :keyword harness: Optional per-request harness override.
+        :paramtype harness: mapping[str, any] or None
         :keyword rollout_id: Optional original identifier; generated when omitted.
         :paramtype rollout_id: str or None
         :keyword timeout: Post-admission timeout in seconds. Default 1860.
@@ -278,7 +281,8 @@ class AsyncRolloutSession:
         """
         validate_rollout_options(timeout, max_response_bytes)
         body = build_rollout_body(
-            task=task, policy=policy, sampling=sampling, rollout_id=rollout_id, job_id=self._job_id
+            task=task, policy=policy, sampling=sampling, rollout_id=rollout_id, job_id=self._job_id,
+            harness=harness,
         )
         self._check()
         pending: Optional[_Pending] = None
