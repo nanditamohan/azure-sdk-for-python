@@ -1270,6 +1270,8 @@ class RLEOperations:
         environment_version: str,
         job_id: Optional[str] = None,
         max_concurrent_rollouts: int = 16,
+        *,
+        server_managed_token_renewal: bool = False,
     ) -> "AsyncRolloutSession":
         """Create a lazy asynchronous shared Execute Rollout session.
 
@@ -1286,12 +1288,19 @@ class RLEOperations:
         :type job_id: str or None
         :param max_concurrent_rollouts: Global session admission limit, from 1 through 64. Default 16.
         :type max_concurrent_rollouts: int
+        :keyword server_managed_token_renewal: Keep a healthy socket open regardless of age or token
+            expiry. Requires service-side delegated token renewal and long-lived connections.
+            Default False retains age/token-based connection replacement.
+        :paramtype server_managed_token_renewal: bool
         :return: A lazy asynchronous context manager with ``execute_rollout`` and async ``close``.
         :rtype: ~azure.ai.projects.aio.operations._rollout_session_async.AsyncRolloutSession
         """
         from ._rollout_session_async import AsyncRolloutSession
 
-        return AsyncRolloutSession(self, environment_name, environment_version, job_id, max_concurrent_rollouts)
+        return AsyncRolloutSession(
+            self, environment_name, environment_version, job_id, max_concurrent_rollouts,
+            server_managed_token_renewal=server_managed_token_renewal,
+        )
 
     @distributed_trace_async
     async def execute_rollout(

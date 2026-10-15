@@ -1,5 +1,11 @@
 # Release History
 
+## 2.7.0b3 (Unreleased)
+
+### Features Added
+
+* Added `server_managed_token_renewal=True` to async rollout sessions. This opt-in keeps a healthy socket open beyond its age and handshake-token expiry when RLE and Capture Proxy renew delegated credentials server-side. Initial and replacement handshakes still require valid credentials; submitted disconnects remain explicit unknown outcomes without replay. The default connection renewal policy is unchanged.
+
 ## 2.7.0b2 (Unreleased)
 
 ### Features Added

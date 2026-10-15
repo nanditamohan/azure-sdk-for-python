@@ -98,7 +98,7 @@ def test_http_request_preserves_harness_override():
     assert json.loads(request.content)["harness"] == {"type": "Gym", "subtype": "OpenEnv"}
 
 
-def _session(monkeypatch, sockets, limit=16):
+def _session(monkeypatch, sockets, limit=16, **options):
     credential = _Credential()
     config = SimpleNamespace(
         endpoint="https://account.test/api/projects/project",
@@ -112,7 +112,9 @@ def _session(monkeypatch, sockets, limit=16):
         return sockets[len(calls) - 1]
 
     monkeypatch.setattr(transport, "websocket_connect", connect)
-    return AsyncRolloutSession(SimpleNamespace(_config=config), "environment", "1", "job", limit), credential, calls
+    return AsyncRolloutSession(
+        SimpleNamespace(_config=config), "environment", "1", "job", limit, **options
+    ), credential, calls
 
 
 async def _sent(socket):
@@ -243,10 +245,13 @@ async def test_disconnect_is_unknown_without_replay_or_recovery(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["send", "timeout", "cancel"])
-async def test_submitted_unknown_blocks_new_work_and_preserves_id(monkeypatch, reason):
+@pytest.mark.parametrize("server_renewal", [False, True])
+async def test_submitted_unknown_blocks_new_work_and_preserves_id(monkeypatch, reason, server_renewal):
     socket = _Socket()
     socket.fail_send = reason == "send"
-    session, _, calls = _session(monkeypatch, [socket])
+    session, _, calls = _session(
+        monkeypatch, [socket], server_managed_token_renewal=server_renewal
+    )
     async with session:
         task = asyncio.create_task(
             session.execute_rollout(
@@ -525,6 +530,68 @@ async def test_expiry_rotation_and_invalid_credential_are_pre_submission(monkeyp
         assert error.value.code == "RolloutCredentialExpired"
         assert len(calls) == 2
         assert not session._uncertain
+
+
+@pytest.mark.asyncio
+async def test_server_renewal_keeps_socket_past_age_and_token_expiry(monkeypatch):
+    socket = _Socket()
+    session, credential, calls = _session(
+        monkeypatch, [socket], server_managed_token_renewal=True
+    )
+    offset = 0
+    monkeypatch.setattr(session_module, "time", SimpleNamespace(
+        time=lambda: time.time() + offset,
+        monotonic=lambda: time.monotonic() + offset,
+    ))
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(
+            task={}, policy=_policy(), rollout_id="first", timeout=10800
+        ))
+        await _sent(socket)
+        offset = 7200
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="second"))
+        assert (await _sent(socket))[0]["rollout_id"] == "second"
+        assert not socket.closed
+        assert len(calls) == credential.calls == 1
+        _complete(socket, "second")
+        _complete(socket, "first")
+        await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
+async def test_server_renewal_still_requires_valid_handshake_token(monkeypatch):
+    session, credential, calls = _session(
+        monkeypatch, [_Socket()], server_managed_token_renewal=True
+    )
+    credential.lifetime = 30
+    async with session:
+        with pytest.raises(RLERolloutError) as error:
+            await session.execute_rollout(task={}, policy=_policy(), rollout_id="not-submitted")
+        assert error.value.code == "RolloutCredentialExpired"
+        assert not calls
+        assert not session._uncertain
+
+
+@pytest.mark.asyncio
+async def test_server_renewal_reconnects_idle_socket_with_current_token(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, credential, calls = _session(
+        monkeypatch, [old, new], server_managed_token_renewal=True
+    )
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="first"))
+        await _sent(old)
+        _complete(old, "first")
+        await first
+        old.incoming.put_nowait(OSError("disconnected while idle"))
+        await asyncio.wait_for(session._active.receiver, timeout=1)
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="second"))
+        await _sent(new)
+        assert old.closed
+        assert len(calls) == credential.calls == 2
+        assert calls[1][1]["additional_headers"]["aml-user-token"] == "token-2"
+        _complete(new, "second")
+        await second
 
 
 @pytest.mark.parametrize(

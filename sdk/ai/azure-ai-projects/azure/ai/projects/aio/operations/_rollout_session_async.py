@@ -54,8 +54,9 @@ class _Connection:
 class AsyncRolloutSession:
     """An event-loop-local shared session with one socket and SDK admission.
 
-    The timeout starts after concurrency admission. Renewal waits for pending
-    calls to settle before replacing the socket. Unknown submitted outcomes stop
+    The timeout starts after concurrency admission. By default, renewal waits for pending
+    calls to settle before replacing the socket. Server-managed token renewal
+    disables age/token-based replacement. Unknown submitted outcomes stop
     new admission, not siblings or server execution. There is no execution replay,
     durable recovery or drain-aware routing.
     """
@@ -67,9 +68,14 @@ class AsyncRolloutSession:
         environment_version: str,
         job_id: Optional[str] = None,
         max_concurrent_rollouts: int = 16,
+        *,
+        server_managed_token_renewal: bool = False,
     ) -> None:
         validate_rollout_session(environment_name, environment_version, max_concurrent_rollouts)
+        if not isinstance(server_managed_token_renewal, bool):
+            raise ValueError("server_managed_token_renewal must be a bool")
         self._operations = operations
+        self._server_managed_token_renewal = server_managed_token_renewal
         self._name = environment_name
         self._version = environment_version
         self._job_id = job_id
@@ -191,8 +197,17 @@ class AsyncRolloutSession:
             max_size=DEFAULT_MAX_RESPONSE_BYTES + 4100,
             close_timeout=5.0,
         )
-        connection = _Connection(socket, time.monotonic() + min(1740.0, token.expires_on - time.time() - 60.0))
-        if self._closed or self._uncertain or time.monotonic() >= connection.expires:
+        expires = (
+            float("inf")
+            if self._server_managed_token_renewal
+            else time.monotonic() + min(1740.0, token.expires_on - time.time() - 60.0)
+        )
+        connection = _Connection(socket, expires)
+        if (
+            self._closed or self._uncertain
+            or time.monotonic() >= connection.expires
+            or token.expires_on - time.time() <= 60
+        ):
             await self._close_connection(connection)
             self._check()
             raise RLERolloutError(None, code="RolloutCredentialExpired", message="Token expired during the handshake.")

@@ -434,6 +434,18 @@ Tokens with 60 seconds or less remaining are rejected before submission.
 The handshake supplies both `Authorization` and `aml-user-token`; both are redacted by
 the SDK WebSocket logger.
 
+For deployments with server-side delegated token renewal, pass
+`server_managed_token_renewal=True` to `open_rollout_session`. This disables
+age/token-based replacement of a healthy socket; tokens are still acquired and
+validated for every initial or replacement handshake. No user token is sent in
+individual execute frames. RLE must renew the connection caller's token before
+downstream rollout setup, and Capture Proxy must renew tokens during model calls.
+The service must also support long-lived connections and the requested execution
+timeout. The current 30-minute service limits are not lifted by this option.
+Use this opt-in only after those service changes are deployed. The default remains
+the existing renewal policy. Disconnect, timeout and unknown-outcome handling are
+unchanged; this option does not implement deployment-drain handoff or recovery.
+
 Connections reuse the existing OpenEnv `_connect_openenv_websocket` helper:
 up to three attempts for transient connectivity failures or HTTP 408, 429, 500,
 502, 503 and 504, with per-attempt timeouts up to 25 seconds, a 90-second connection
