@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.rle import FoundryDeploymentPolicy, LoomPolicy, SamplingOptions
+from azure.ai.projects.rle import FoundryDeploymentPolicy, HarnessConfiguration, LoomPolicy, SamplingOptions
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
@@ -402,3 +402,33 @@ def test_a_serialised_foundry_policy_deserialises_back_to_its_concrete_type():
 
     assert isinstance(received.policy, FoundryDeploymentPolicy)
     assert received.policy.deployment_name == "gpt-5-mini"
+
+
+def test_harness_is_sent_when_given():
+    harness = HarnessConfiguration(
+        type="byoh",
+        protocol="responses",
+        endpoint="https://acct.services.ai.azure.com/api/projects/proj/agents/my-agent",
+    )
+
+    body = build_rollout_body(task={}, policy=_policy(), harness=harness).as_dict()
+
+    assert body["harness"] == {
+        "type": "byoh",
+        "protocol": "responses",
+        "endpoint": "https://acct.services.ai.azure.com/api/projects/proj/agents/my-agent",
+    }
+
+
+def test_harness_is_absent_rather_than_null_when_unset():
+    body = build_rollout_body(task={}, policy=_policy())
+
+    assert "harness" not in body.as_dict()
+
+
+def test_a_package_harness_carries_only_its_name():
+    body = build_rollout_body(
+        task={}, policy=_policy(), harness=HarnessConfiguration(type="package", name="opencode")
+    ).as_dict()
+
+    assert body["harness"] == {"type": "package", "name": "opencode"}
