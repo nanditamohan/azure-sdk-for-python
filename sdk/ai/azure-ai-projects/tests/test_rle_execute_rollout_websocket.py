@@ -19,8 +19,8 @@ from azure.core.credentials import AccessToken
 
 from azure.ai.projects.aio import AIProjectClient as AsyncAIProjectClient
 from azure.ai.projects.aio.operations import _patch_rle_async as transport
-from azure.ai.projects.aio.operations import _rollout_session_async as session_module
-from azure.ai.projects.aio.operations._rollout_session_async import AsyncRolloutSession
+from azure.ai.projects.aio.operations import _rollout_client_async as session_module
+from azure.ai.projects.aio.operations._rollout_client_async import AsyncRolloutClient
 from azure.ai.projects.operations import RLEOperations, RLERolloutError, RLERolloutUnknownOutcomeError
 from azure.ai.projects.operations._patch_rle import _WEBSOCKET_LOGGER
 from azure.ai.projects.operations._patch_rle_rollout import (
@@ -89,13 +89,13 @@ def _complete(socket, rollout_id):
 
 
 def test_http_request_preserves_harness_override():
-    harness = {"type": "Gym", "subtype": "OpenEnv"}
+    harness = {"type": "gym"}
     body = build_rollout_body(task={"row": 1}, policy=_policy(), harness=harness)
-    harness["subtype"] = "changed"
+    harness["type"] = "changed"
     request = build_rollout_request(
         environment_name="environment", environment_version="1", body=body, forwarded_token="test-token"
     )
-    assert json.loads(request.content)["harness"] == {"type": "Gym", "subtype": "OpenEnv"}
+    assert json.loads(request.content)["harness"] == {"type": "gym"}
 
 
 def _session(monkeypatch, sockets, limit=16, **options):
@@ -112,7 +112,7 @@ def _session(monkeypatch, sockets, limit=16, **options):
         return sockets[len(calls) - 1]
 
     monkeypatch.setattr(transport, "websocket_connect", connect)
-    return AsyncRolloutSession(
+    return AsyncRolloutClient(
         SimpleNamespace(_config=config), "environment", "1", "job", limit, **options
     ), credential, calls
 
@@ -124,9 +124,9 @@ async def _sent(socket):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [
     None,
-    {"type": "Gym", "subtype": "OpenEnv"},
-    {"type": "Harness", "subtype": "HostedAgent", "agent_name": "agent", "agent_version": "7"},
-    {"type": "Harness", "subtype": "BYOH", "invocation_url": "https://harness.example.test/run"},
+    {"type": "gym"},
+    {"type": "byoh", "endpoint": "https://account.test/api/projects/project/agents/agent", "protocol": "responses"},
+    {"type": "byoh", "endpoint": "https://harness.example.test/run", "protocol": "rle-invocation"},
 ])
 async def test_harness_override_is_preserved_in_execute_frame(monkeypatch, harness):
     socket = _Socket()
@@ -150,11 +150,13 @@ async def test_public_factory_is_lazy_and_legacy_http_defaults():
     client = AsyncAIProjectClient(
         endpoint="https://account.test/api/projects/project", credential=credential, allow_preview=True
     )
-    async with client.rle.open_rollout_session("environment", "1", max_concurrent_rollouts=3) as session:
+    async with client.rle.get_rollout_client("environment", "1", max_concurrent_rollouts=3) as session:
+        assert isinstance(session, AsyncRolloutClient)
         assert credential.calls == 0
         assert session._active is None
         assert inspect.signature(client.rle.execute_rollout).parameters["transport"].default == "http"
-    assert not hasattr(RLEOperations, "open_rollout_session")
+    assert not hasattr(RLEOperations, "get_rollout_client")
+    assert not hasattr(client.rle, "open_rollout_session")
     assert "transport" not in inspect.signature(RLEOperations.execute_rollout).parameters
     await client.close()
 
@@ -640,7 +642,7 @@ def _loopback_client(monkeypatch, server, limit=3):
         credential=credential,
         allow_preview=True,
     )
-    return client, client.rle.open_rollout_session("environment", "1", "job", limit), credential
+    return client, client.rle.get_rollout_client("environment", "1", "job", limit), credential
 
 
 @pytest.mark.asyncio

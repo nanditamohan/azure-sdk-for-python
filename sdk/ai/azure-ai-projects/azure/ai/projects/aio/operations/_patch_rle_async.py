@@ -101,7 +101,7 @@ from ._operations import (
 
 if TYPE_CHECKING:
     from azure.core.credentials_async import AsyncTokenCredential
-    from ._rollout_session_async import AsyncRolloutSession
+    from ._rollout_client_async import AsyncRolloutClient
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -1264,7 +1264,7 @@ class RLEOperations:
         token = await credential.get_token(*scopes)
         return token.token
 
-    def open_rollout_session(
+    def get_rollout_client(
         self,
         environment_name: str,
         environment_version: str,
@@ -1272,13 +1272,13 @@ class RLEOperations:
         max_concurrent_rollouts: int = 16,
         *,
         server_managed_token_renewal: bool = False,
-    ) -> "AsyncRolloutSession":
-        """Create a lazy asynchronous shared Execute Rollout session.
+    ) -> "AsyncRolloutClient":
+        """Create a lazy asynchronous shared Execute Rollout client.
 
         The session owns admission and a single socket. Its per-call timeout
         starts after concurrency admission and includes connection and execution.
         Queue waiting remains cancellable and wakes on closure or an unknown
-        submitted outcome. Close the session before this client.
+        submitted outcome. Close the rollout client before the project client.
 
         :param environment_name: Published environment name.
         :type environment_name: str
@@ -1293,11 +1293,11 @@ class RLEOperations:
             Default False retains age/token-based connection replacement.
         :paramtype server_managed_token_renewal: bool
         :return: A lazy asynchronous context manager with ``execute_rollout`` and async ``close``.
-        :rtype: ~azure.ai.projects.aio.operations._rollout_session_async.AsyncRolloutSession
+        :rtype: ~azure.ai.projects.aio.operations._rollout_client_async.AsyncRolloutClient
         """
-        from ._rollout_session_async import AsyncRolloutSession
+        from ._rollout_client_async import AsyncRolloutClient
 
-        return AsyncRolloutSession(
+        return AsyncRolloutClient(
             self, environment_name, environment_version, job_id, max_concurrent_rollouts,
             server_managed_token_renewal=server_managed_token_renewal,
         )
@@ -1357,7 +1357,7 @@ class RLEOperations:
         :keyword forwarded_token: Bearer token RLE forwards to Capture Proxy for Loom sampling.
          Acquired from this client's credential when omitted, which is the common case.
         :paramtype forwarded_token: str or None
-        :keyword transport: The existing HTTP transport. Use ``open_rollout_session`` for shared WebSocket execution.
+        :keyword transport: The existing HTTP transport. Use ``get_rollout_client`` for shared WebSocket execution.
         :paramtype transport: str
         :return: The completed rollout.
         :rtype: ~azure.ai.projects.models.RolloutResult
@@ -1365,7 +1365,7 @@ class RLEOperations:
          or could not complete the rollout.
         """
         if transport != "http":
-            raise ValueError("Use open_rollout_session for WebSocket execution; execute_rollout uses HTTP.")
+            raise ValueError("Use get_rollout_client for WebSocket execution; execute_rollout uses HTTP.")
         if not environment_name:
             raise ValueError("environment_name is required")
         if not environment_version:

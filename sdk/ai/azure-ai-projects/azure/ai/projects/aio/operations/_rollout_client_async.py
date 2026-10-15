@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 # ------------------------------------
-"""Execute Rollout multiplexing on the existing OpenEnv WebSocket transport."""
+"""Execute Rollout client on the existing OpenEnv WebSocket transport."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class _Connection:
         self.receiver: Optional[asyncio.Task] = None
 
 
-class AsyncRolloutSession:
+class AsyncRolloutClient:
     """An event-loop-local shared session with one socket and SDK admission.
 
     The timeout starts after concurrency admission. By default, renewal waits for pending
@@ -95,7 +95,7 @@ class AsyncRolloutSession:
     def _uncertain(self) -> bool:
         return self._admission_stopped.is_set() and not self._closed
 
-    async def __aenter__(self) -> "AsyncRolloutSession":
+    async def __aenter__(self) -> "AsyncRolloutClient":
         self._check()
         return self
 

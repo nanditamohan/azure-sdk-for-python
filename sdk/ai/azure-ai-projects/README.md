@@ -389,7 +389,7 @@ policy = LoomPolicy(
 )
 
 # project_client is azure.ai.projects.aio.AIProjectClient.
-async with project_client.rle.open_rollout_session(
+async with project_client.rle.get_rollout_client(
     environment_name="environment",
     environment_version="1",
     job_id="training-job",
@@ -435,7 +435,7 @@ The handshake supplies both `Authorization` and `aml-user-token`; both are redac
 the SDK WebSocket logger.
 
 For deployments with server-side delegated token renewal, pass
-`server_managed_token_renewal=True` to `open_rollout_session`. This disables
+`server_managed_token_renewal=True` to `get_rollout_client`. This disables
 age/token-based replacement of a healthy socket; tokens are still acquired and
 validated for every initial or replacement handshake. No user token is sent in
 individual execute frames. RLE must renew the connection caller's token before

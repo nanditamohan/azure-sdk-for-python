@@ -4,6 +4,7 @@
 
 ### Features Added
 
+* Renamed the preview factory to `get_rollout_client()` and its returned type to `AsyncRolloutClient`, matching `get_openenv_client()`. The previous `open_rollout_session()` name is removed without an alias.
 * Added `server_managed_token_renewal=True` to async rollout sessions. This opt-in keeps a healthy socket open beyond its age and handshake-token expiry when RLE and Capture Proxy renew delegated credentials server-side. Initial and replacement handshakes still require valid credentials; submitted disconnects remain explicit unknown outcomes without replay. The default connection renewal policy is unchanged.
 
 ## 2.7.0b2 (Unreleased)
@@ -21,7 +22,7 @@
 
 * RLE client types now live in `azure.ai.projects.rle` without the `RLE` prefix, for example `rle.Instance`, `rle.InstanceStatus`, `rle.StepResult`, `rle.RolloutRequest`, `rle.LoomPolicy` and `rle.FoundryDeploymentPolicy`. The generated types remain importable from `azure.ai.projects.models` for the generated operations but are no longer listed in its `__all__`.
 * Added `FoundryDeploymentPolicy`, which lets `rle.execute_rollout()` sample a model deployment in the project for eval instead of a Loom checkpoint. It needs only `deployment_name` and `project_endpoint`, uses the client's own credential, and returns a text-level, non-trainable result. Use `LoomPolicy` for training.
-* Added async-only `rle.open_rollout_session(environment_name, environment_version, job_id=None, max_concurrent_rollouts=16)` with one shared Execute Rollout socket, SDK-owned admission, serialized sends, rollout-ID dispatch and correlated progress. It reuses the existing OpenEnv authenticated connection and bounded handshake retries. Age/credential renewal pauses new submissions until pending calls settle, then replaces the socket without an overlapping connection pool. Existing sync and async `execute_rollout` retain their HTTP defaults.
+* Added async-only `rle.get_rollout_client(environment_name, environment_version, job_id=None, max_concurrent_rollouts=16)` with one shared Execute Rollout socket, SDK-owned admission, serialized sends, rollout-ID dispatch and correlated progress. It reuses the existing OpenEnv authenticated connection and bounded handshake retries. Age/credential renewal pauses new submissions until pending calls settle, then replaces the socket without an overlapping connection pool. Existing sync and async `execute_rollout` retain their HTTP defaults.
 * Submitted disconnect, timeout, cancellation and closure raise `RLERolloutUnknownOutcomeError` with the original rollout ID and conservatively stop new admission. No execution replay, automatic durable recovery, drain-aware routing or server cancellation is issued; interrupted pending work is not guaranteed to complete. Closure and unknown outcomes awaken queued callers, and local socket cleanup is bounded. The default 1860-second call timeout starts after SDK concurrency admission; queue waiting does not consume it and remains cancellable.
 * WebSocket logs redact both identity headers. Positive caller response budgets above 8 MiB are accepted while protocol payloads remain capped at 8 MiB and headers at 4 KiB; duplicate frame header keys are rejected.
 
