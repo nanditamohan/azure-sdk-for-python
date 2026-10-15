@@ -414,6 +414,10 @@ credentials and opens the socket. Use `await session.close()` without a context 
 and close the session before the project client. Existing sync and async
 `client.rle.execute_rollout(...)` retain their HTTP default and do not create a session.
 
+Outbound execute messages are limited to 4 MiB including their length prefix,
+header and payload, with a separate 4 KiB header limit. Oversized requests fail
+locally before submission and do not interrupt other pending rollouts.
+
 The SDK owns concurrency admission and a **single shared socket**. The limit defaults to 16
 and accepts integers from 1 through 64, conservatively capped at the inspected service's
 default per-socket capacity; this is not advertised or negotiated with the service.

@@ -28,6 +28,7 @@ from azure.ai.projects.operations._patch_rle_rollout import (
     build_rollout_body,
     build_rollout_request,
     deserialize_rollout_frame,
+    serialize_rollout_frame,
 )
 from azure.ai.projects.rle import LoomPolicy
 
@@ -119,6 +120,65 @@ def _session(monkeypatch, sockets, limit=16, **options):
 
 async def _sent(socket):
     return await asyncio.wait_for(socket.sent.get(), timeout=1)
+
+
+def test_request_limit_includes_prefix_header_and_payload():
+    limit = 4 * 1024 * 1024
+    body = build_rollout_body(task="", policy=_policy(), rollout_id="boundary")
+    overhead = len(serialize_rollout_frame("execute", body))
+    body = build_rollout_body(task="x" * (limit - overhead), policy=_policy(), rollout_id="boundary")
+    assert len(serialize_rollout_frame("execute", body)) == limit
+    body = build_rollout_body(task="x" * (limit - overhead + 1), policy=_policy(), rollout_id="boundary")
+    with pytest.raises(ValueError, match="4 MiB total"):
+        serialize_rollout_frame("execute", body)
+
+
+@pytest.mark.asyncio
+async def test_oversized_request_does_not_interrupt_valid_sibling(monkeypatch):
+    socket = _Socket()
+    session, _, calls = _session(monkeypatch, [socket])
+    async with session:
+        valid = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="valid"))
+        await _sent(socket)
+        with pytest.raises(ValueError, match="4 MiB total"):
+            await session.execute_rollout(task="x" * (4 * 1024 * 1024), policy=_policy(), rollout_id="large")
+        assert not session._uncertain
+        assert not socket.closed
+        assert socket.sent.empty()
+        assert len(calls) == 1
+        _complete(socket, "valid")
+        await valid
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_still_closes_socket(monkeypatch):
+    socket = _Socket()
+    session, _, _ = _session(monkeypatch, [socket])
+    rollout = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="done"))
+    await _sent(socket)
+    _complete(socket, "done")
+    await rollout
+    receiver_joined = asyncio.Event()
+
+    async def receiver():
+        try:
+            await asyncio.Future()
+        finally:
+            receiver_joined.set()
+            await asyncio.Future()
+
+    session._active.receiver.cancel()
+    await asyncio.gather(session._active.receiver, return_exceptions=True)
+    session._active.receiver = asyncio.create_task(receiver())
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(session.close())
+    await receiver_joined.wait()
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert socket.closed
+    assert session._active is None
+    await session.close()
 
 
 @pytest.mark.asyncio

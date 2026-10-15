@@ -225,8 +225,8 @@ def serialize_rollout_frame(message_type: str, body: RolloutRequest) -> bytes:
         header["job_id"] = body.job_id
     encoded = json.dumps(header, separators=(",", ":")).encode()
     payload = json.dumps(body.as_dict(), separators=(",", ":")).encode()
-    if len(encoded) > 4096 or len(payload) > DEFAULT_MAX_RESPONSE_BYTES:
-        raise ValueError("Execute Rollout request exceeded the 4 KiB header or 8 MiB payload limit")
+    if len(encoded) > 4096 or 4 + len(encoded) + len(payload) > 4 * 1024 * 1024:
+        raise ValueError("Execute Rollout request exceeded the 4 KiB header or 4 MiB total message limit")
     return struct.pack(">I", len(encoded)) + encoded + payload
 
 

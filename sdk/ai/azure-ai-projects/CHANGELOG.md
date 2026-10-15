@@ -2,6 +2,11 @@
 
 ## 2.7.0b3 (Unreleased)
 
+### Bugs Fixed
+
+* Validate the complete outbound Execute Rollout frame against the service's 4 MiB inbound limit before sending, without interrupting sibling rollouts.
+* Close or abort the WebSocket even when client closure is cancelled while joining its receiver.
+
 ### Features Added
 
 * Renamed the preview factory to `get_rollout_client()` and its returned type to `AsyncRolloutClient`, matching `get_openenv_client()`. The previous `open_rollout_session()` name is removed without an alias.

@@ -149,16 +149,18 @@ class AsyncRolloutClient:
                 resource.release()
 
     async def _close_connection(self, connection: _Connection) -> None:
-        if connection.receiver is not None:
-            connection.receiver.cancel()
-            await asyncio.gather(connection.receiver, return_exceptions=True)
         try:
-            await asyncio.wait_for(connection.socket.close(), timeout=5.0)
-        except BaseException:
-            transport = getattr(connection.socket, "transport", None)
-            if transport is not None:
-                transport.abort()
-            raise
+            if connection.receiver is not None:
+                connection.receiver.cancel()
+                await asyncio.gather(connection.receiver, return_exceptions=True)
+        finally:
+            try:
+                await asyncio.wait_for(connection.socket.close(), timeout=5.0)
+            except BaseException:
+                transport = getattr(connection.socket, "transport", None)
+                if transport is not None:
+                    transport.abort()
+                raise
 
     async def _connect(self, deadline: float) -> _Connection:
         from ._patch_rle_async import _connect_openenv_websocket
