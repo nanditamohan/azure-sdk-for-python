@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio  # pylint: disable=do-not-import-asyncio
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -34,6 +35,8 @@ from ...operations._patch_rle_rollout import (
 )
 from ...rle._rollout_models import HarnessConfiguration, RolloutPolicy, RolloutResult, SamplingOptions
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class _Pending:
     def __init__(self, callback: Any, limit: int) -> None:
@@ -49,16 +52,21 @@ class _Connection:
         self.expires = expires
         self.pending: dict[str, _Pending] = {}
         self.receiver: Optional[asyncio.Task] = None
+        self.draining = False
+        self.replaceable = asyncio.Event()
+        self.replaceable.set()
+        self.closing: Optional[asyncio.Task] = None
 
 
 class AsyncRolloutClient:
-    """An event-loop-local shared session with one socket and SDK admission.
+    """An event-loop-local shared session with SDK admission and deployment handoff.
 
     The timeout starts after concurrency admission. By default, renewal waits for pending
     calls to settle before replacing the socket. Server-managed token renewal
     disables age/token-based replacement. Unknown submitted outcomes stop
-    new admission, not siblings or server execution. There is no execution replay,
-    durable recovery or drain-aware routing.
+    new admission, not siblings or server execution. Draining sockets retain existing
+    results while replacements accept new work. Only explicit pre-execution
+    ServerDraining rejections can be resubmitted; there is no durable recovery.
     """
 
     def __init__(
@@ -81,9 +89,8 @@ class AsyncRolloutClient:
         self._job_id = job_id
         self._admission = asyncio.Semaphore(max_concurrent_rollouts)
         self._send_lock = asyncio.Lock()
-        self._idle = asyncio.Event()
-        self._idle.set()
         self._active: Optional[_Connection] = None
+        self._connections: set[_Connection] = set()
         self._closed_event = asyncio.Event()
         self._admission_stopped = asyncio.Event()
 
@@ -161,18 +168,41 @@ class AsyncRolloutClient:
                 if transport is not None:
                     transport.abort()
                 raise
+            finally:
+                self._connections.discard(connection)
+                if self._active is connection:
+                    self._active = None
+
+    def _retire_connection(self, connection: _Connection) -> asyncio.Task:
+        if connection.closing is None:
+            connection.closing = asyncio.create_task(self._close_connection(connection))
+            connection.closing.add_done_callback(self._report_close_failure)
+        return connection.closing
+
+    @staticmethod
+    def _report_close_failure(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.warning("Failed to close a retired Execute Rollout WebSocket.", exc_info=task.exception())
+
+    @staticmethod
+    def _mark_draining(connection: _Connection) -> None:
+        connection.draining = True
+        connection.replaceable.set()
 
     async def _connect(self, deadline: float) -> _Connection:
         from ._patch_rle_async import _connect_openenv_websocket
 
         self._check()
-        if self._active and time.monotonic() < self._active.expires:
+        if self._active and not self._active.draining and time.monotonic() < self._active.expires:
             return self._active
         if self._active:
-            await self._wait_or_close(asyncio.create_task(self._idle.wait()), deadline, admission=True)
+            previous = self._active
+            await self._wait_or_close(asyncio.create_task(previous.replaceable.wait()), deadline, admission=True)
             self._check()
-            await self._close_connection(self._active)
-            self._active = None
+            if not previous.draining or not previous.pending:
+                await self._retire_connection(previous)
+            if self._active is previous:
+                self._active = None
         self._check()
         config = self._operations._config  # pylint: disable=protected-access
         credential = getattr(config, "credential", None)
@@ -214,6 +244,7 @@ class AsyncRolloutClient:
             self._check()
             raise RLERolloutError(None, code="RolloutCredentialExpired", message="Token expired during the handshake.")
         self._active = connection
+        self._connections.add(connection)
         connection.receiver = asyncio.create_task(self._receive(connection))
         return connection
 
@@ -222,7 +253,10 @@ class AsyncRolloutClient:
             while not self._closed:
                 header, payload = deserialize_rollout_frame(await connection.socket.recv(), DEFAULT_MAX_RESPONSE_BYTES)
                 if header["type"] == "server-draining":
-                    # Deployment drain routing is deliberately deferred in this first draft.
+                    self._mark_draining(connection)
+                    if not connection.pending:
+                        self._retire_connection(connection)
+                        return
                     continue
                 rollout_id = header["rollout_id"]
                 pending = connection.pending.get(rollout_id)
@@ -241,6 +275,8 @@ class AsyncRolloutClient:
                         pending.future.set_result(result)
                     elif header["type"] == "error":
                         error = rollout_error_from_payload(payload, rollout_id)
+                        if error.code == "ServerDraining":
+                            self._mark_draining(connection)
                         pending.terminal = True
                         pending.future.set_exception(error)
                     else:
@@ -302,64 +338,85 @@ class AsyncRolloutClient:
             harness=harness,
         )
         self._check()
-        pending: Optional[_Pending] = None
-        connection: Optional[_Connection] = None
-        attempted = False
         async with self._lease(self._admission, None):
             deadline = time.monotonic() + timeout
             frame = serialize_rollout_frame("execute", body)
-            try:
-                async with self._lease(self._send_lock, deadline):
-                    connection = await self._wait_or_close(
-                        asyncio.create_task(self._connect(deadline)),
-                        deadline,
-                        admission=True,
-                    )
-                    self._check()
-                    if time.monotonic() >= deadline:
-                        raise asyncio.TimeoutError()
-                    if time.monotonic() >= connection.expires:
-                        raise RLERolloutError(
-                            None, code="RolloutConnectionClosed", message="Connection closed before submission."
+            attempt = 0
+            while True:
+                attempt += 1
+                pending: Optional[_Pending] = None
+                connection: Optional[_Connection] = None
+                attempted = False
+                try:
+                    async with self._lease(self._send_lock, deadline):
+                        connection = await self._wait_or_close(
+                            asyncio.create_task(self._connect(deadline)),
+                            deadline,
+                            admission=True,
                         )
-                    if body.rollout_id in connection.pending:
-                        raise ValueError("rollout_id is already pending in this session")
-                    pending = _Pending(progress_callback, max_response_bytes)
-                    connection.pending[body.rollout_id] = pending
-                    self._idle.clear()
-                    # Without an admission ACK, even an interrupted send is ambiguous.
-                    attempted = True
-                    await self._wait_or_close(asyncio.create_task(connection.socket.send(frame)), deadline)
-                return await self._wait_or_close(pending.future, deadline)
-            except BaseException as exc:
-                if pending is not None and pending.terminal:
-                    return pending.future.result()
-                if attempted:
-                    self._stop_admission()
-                    # Preserve callback/protocol errors instead of swallowing them.
-                    if pending is not None and pending.future.done() and not pending.future.cancelled():
+                        self._check()
+                        if time.monotonic() >= deadline:
+                            raise asyncio.TimeoutError()
+                        if connection.draining:
+                            raise RLERolloutError(
+                                None, code="ServerDraining", message="Connection drained before submission.",
+                                rollout_id=body.rollout_id,
+                            )
+                        if time.monotonic() >= connection.expires:
+                            raise RLERolloutError(
+                                None, code="RolloutConnectionClosed", message="Connection closed before submission."
+                            )
+                        if any(body.rollout_id in item.pending for item in self._connections):
+                            raise ValueError("rollout_id is already pending in this session")
+                        pending = _Pending(progress_callback, max_response_bytes)
+                        connection.pending[body.rollout_id] = pending
+                        connection.replaceable.clear()
+                        # Without an admission ACK, even an interrupted send is ambiguous.
+                        attempted = True
+                        await self._wait_or_close(asyncio.create_task(connection.socket.send(frame)), deadline)
+                    return await self._wait_or_close(pending.future, deadline)
+                except BaseException as exc:
+                    if pending is not None and pending.terminal:
                         failure = pending.future.exception()
-                        if failure is not None and not isinstance(failure, _RolloutConnectionLost):
-                            if failure is exc:
-                                raise
-                            raise failure from exc
-                    raise RLERolloutUnknownOutcomeError(
-                        rollout_id=body.rollout_id,
-                        message=(
-                            "Submitted rollout outcome is unknown after send failure, "
-                            "cancellation, timeout, closure or disconnect."
-                        ),
-                    ) from exc
-                raise
-            finally:
-                if pending is not None and connection is not None:
-                    connection.pending.pop(body.rollout_id, None)
-                    if not pending.future.done():
-                        pending.future.cancel()
-                    elif not pending.future.cancelled():
-                        pending.future.exception()
-                    if not connection.pending:
-                        self._idle.set()
+                        if not isinstance(failure, RLERolloutError) or failure.code != "ServerDraining":
+                            return pending.future.result()
+                        if isinstance(exc, asyncio.CancelledError):
+                            raise
+                        if attempt >= 3:
+                            raise failure
+                    elif attempted:
+                        self._stop_admission()
+                        # Preserve callback/protocol errors instead of swallowing them.
+                        if pending is not None and pending.future.done() and not pending.future.cancelled():
+                            failure = pending.future.exception()
+                            if failure is not None and not isinstance(failure, _RolloutConnectionLost):
+                                if failure is exc:
+                                    raise
+                                raise failure from exc
+                        raise RLERolloutUnknownOutcomeError(
+                            rollout_id=body.rollout_id,
+                            message=(
+                                "Submitted rollout outcome is unknown after send failure, "
+                                "cancellation, timeout, closure or disconnect."
+                            ),
+                        ) from exc
+                    elif isinstance(exc, RLERolloutError):
+                        if exc.code != "ServerDraining" or attempt >= 3:
+                            raise
+                    else:
+                        raise
+                finally:
+                    if pending is not None and connection is not None:
+                        connection.pending.pop(body.rollout_id, None)
+                        if not pending.future.done():
+                            pending.future.cancel()
+                        elif not pending.future.cancelled():
+                            pending.future.exception()
+                        if not connection.pending:
+                            connection.replaceable.set()
+                            if connection.draining:
+                                self._retire_connection(connection)
+                await self._wait_or_close(asyncio.create_task(asyncio.sleep(1)), deadline, admission=True)
 
     async def close(self) -> None:
         """Awaken queued callers and close local resources, not server execution."""
@@ -367,12 +424,17 @@ class AsyncRolloutClient:
             return
         self._closed_event.set()
         self._admission_stopped.set()
-        connection = self._active
         try:
-            if connection is not None:
+            connections = tuple(self._connections)
+            for connection in connections:
                 for pending in connection.pending.values():
                     if not pending.future.done():
                         pending.future.set_exception(_RolloutConnectionLost("Rollout session closed."))
-                await self._close_connection(connection)
+            results = await asyncio.gather(
+                *(self._retire_connection(connection) for connection in connections), return_exceptions=True
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
         finally:
             self._active = None

@@ -424,7 +424,7 @@ Outbound execute messages are limited to 4 MiB including their length prefix,
 header and payload, with a separate 4 KiB header limit. Oversized requests fail
 locally before submission and do not interrupt other pending rollouts.
 
-The SDK owns concurrency admission and a **single shared socket**. The limit defaults to 16
+The SDK owns concurrency admission and **one active submission socket**. The limit defaults to 16
 and accepts integers from 1 through 64, conservatively capped at the inspected service's
 default per-socket capacity; this is not advertised or negotiated with the service.
 Sends are serialized and one receive dispatcher
@@ -434,7 +434,9 @@ Callback exceptions and malformed progress are surfaced to the associated caller
 
 For long jobs, the SDK stops new submissions at the age/token renewal boundary, waits
 for current pending calls to settle, then closes the old socket before opening its replacement.
-There is no simultaneous old/new connection pool. Renewal is scheduled after at most
+Deployment draining is different: existing work stays on the draining socket while new
+submissions open a replacement, without waiting for existing work to finish.
+Renewal is scheduled after at most
 1740 seconds or 60 seconds before credential expiry, whichever comes first.
 Every new connection refreshes credentials.
 Credentials must report their actual expiry in `AccessToken.expires_on`. In particular,
@@ -454,15 +456,16 @@ The service must also support long-lived connections and the requested execution
 timeout. The current 30-minute service limits are not lifted by this option.
 Use this opt-in only after those service changes are deployed. The default remains
 the existing renewal policy. Disconnect, timeout and unknown-outcome handling are
-unchanged; this option does not implement deployment-drain handoff or recovery.
+unchanged. Deployment-drain handoff is supported with either setting; durable
+disconnect recovery is not implemented.
 
 Connections reuse the existing OpenEnv `_connect_openenv_websocket` helper:
 up to three attempts for transient connectivity failures or HTTP 408, 429, 500,
 502, 503 and 504, with per-attempt timeouts up to 25 seconds, a 90-second connection
 budget and full-jitter delays up to two and four seconds. The remaining rollout
 deadline can shorten these bounds. Authentication and certificate failures are not retried.
-These are opening-handshake retries only. Execution errors, including retryable
-admission rejections, are surfaced rather than replayed. Generic `retryable=true`
+These are opening-handshake retries only. Execution errors are surfaced rather
+than replayed, except for the explicit `ServerDraining` admission rejection below. Generic `retryable=true`
 can describe a dependency failure after work started, not just an admission rejection.
 
 An interrupted send or abrupt disconnect raises `RLERolloutUnknownOutcomeError` with
@@ -475,11 +478,22 @@ unknown submitted outcome. After admission, timeout includes renewal waiting, cr
 opening the connection, serialized send waiting and execution.
 Timeout/cancellation before attempting to send does not submit work or itself block future admission.
 
-Deployment-drain handling is deferred in this first draft. `server-draining` control frames
-are ignored, not mistaken for rollout results. There is **no guarantee of completing a
-pending rollout across a deployment or connection interruption**. An idle closed connection
-may be replaced for later submissions only when there is no unresolved work; submitted
-disconnects remain explicit unknown outcomes.
+On a `server-draining` notification, the SDK stops submitting to that connection.
+Its receiver continues dispatching progress and terminal results for existing rollouts.
+The next submission opens a replacement with fresh credentials; admission remains global
+across all connections, and an old connection is closed after its pending calls settle.
+Repeated notifications do not open additional sockets. Multiple successive deployments
+can leave several old connections delivering their original results.
+
+A rollout explicitly rejected with `ServerDraining` was not started by the service.
+Only this admission rejection is resubmitted, with the same rollout ID and request,
+at most three submissions and a one-second delay between attempts. The original
+post-admission deadline and concurrency permit cover all attempts. The service must
+preserve this pre-execution rejection contract; a generic retryable error is not enough.
+No signal migrates an already-running rollout to another pod. Completion still depends
+on the draining backend remaining alive long enough to deliver its terminal response.
+If it disconnects or the drain deadline expires first, unresolved rollouts raise explicit
+unknown outcomes with their original IDs and are never automatically replayed.
 
 Cancellation, timeout, and session close do not cancel server execution or siblings.
 If a submitted outcome cannot be accounted for, the session stops admitting new work;
@@ -491,8 +505,8 @@ No per-rollout cancel commands are issued. `max_response_bytes` is a positive pe
 budget; a larger configured budget is accepted, but the WebSocket's 8 MiB payload bound still
 applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
 
-This interface is in **2.8.0 (Unreleased)** and requires a coordinated SDK release before
-consumers can use a published 2.8.0 dependency.
+Deployment-drain handoff is in **2.7.0b5 (Unreleased)** and requires publishing that
+development wheel before consumers pin it.
 
 ## Next steps
 

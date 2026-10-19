@@ -286,27 +286,290 @@ async def test_shared_twenty_calls_sdk_admission_out_of_order_auth_and_job(monke
 
 
 @pytest.mark.asyncio
-async def test_draining_control_does_not_create_another_socket(monkeypatch):
-    old = _Socket()
-    session, credential, calls = _session(monkeypatch, [old], limit=2)
+@pytest.mark.parametrize("server_renewal", [False, True])
+async def test_draining_handoff_keeps_old_results_and_global_admission(monkeypatch, server_renewal):
+    old, new = _Socket(), _Socket()
+    session, credential, calls = _session(
+        monkeypatch, [old, new], limit=2, server_managed_token_renewal=server_renewal
+    )
     async with session:
         first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="first"))
         second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="second"))
         await _sent(old)
         await _sent(old)
+        connection = session._active
+        old.incoming.put_nowait(_frame("server-draining", payload={"drain_timeout_seconds": 1800}))
+        await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
         old.incoming.put_nowait(_frame("server-draining"))
         third = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="third"))
         await asyncio.sleep(0)
         assert len(calls) == 1
         _complete(old, "first")
         assert (await first).rollout_id == "first"
-        assert (await _sent(old))[0]["rollout_id"] == "third"
+        assert (await _sent(new))[0]["rollout_id"] == "third"
         assert not old.closed
-        _complete(old, "third")
+        _complete(new, "third")
         _complete(old, "second")
         await asyncio.gather(second, third)
-        assert credential.calls == 1
+        await asyncio.wait_for(connection.closing, timeout=1)
+        assert old.closed
+        assert credential.calls == len(calls) == 2
+        assert calls[1][1]["additional_headers"]["aml-user-token"] == "token-2"
         assert old.sent.empty()
+    assert new.closed
+
+
+@pytest.mark.asyncio
+async def test_server_draining_rejection_resubmits_only_rejected_id(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, calls = _session(monkeypatch, [old, new], limit=2)
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="running"))
+        await _sent(old)
+        rejected = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="rejected"))
+        original = await _sent(old)
+        old.incoming.put_nowait(_frame("error", "rejected", {
+            "code": "ServerDraining", "message": "Not admitted", "retryable": True,
+        }))
+        replacement = await asyncio.wait_for(new.sent.get(), timeout=2)
+        assert replacement == original
+        assert not old.closed
+        assert not session._uncertain
+        _complete(new, "rejected")
+        _complete(old, "running")
+        assert [result.rollout_id for result in await asyncio.gather(first, rejected)] == ["running", "rejected"]
+        assert len(calls) == 2
+        assert old.sent.empty()
+        assert new.sent.empty()
+
+
+@pytest.mark.asyncio
+async def test_repeated_draining_rejections_are_bounded(monkeypatch):
+    sockets = [_Socket() for _ in range(3)]
+    session, _, calls = _session(monkeypatch, sockets)
+    async with session:
+        rollout = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="original"))
+        for socket in sockets:
+            assert (await asyncio.wait_for(socket.sent.get(), timeout=2))[0]["rollout_id"] == "original"
+            socket.incoming.put_nowait(_frame("error", "original", {
+                "code": "ServerDraining", "message": "Not admitted", "retryable": True,
+            }))
+        with pytest.raises(RLERolloutError) as error:
+            await asyncio.wait_for(rollout, timeout=1)
+        assert error.value.code == "ServerDraining"
+        assert error.value.rollout_id == "original"
+        assert not session._uncertain
+        assert len(calls) == 3
+    assert all(socket.closed for socket in sockets)
+
+
+@pytest.mark.asyncio
+async def test_drain_admission_retry_keeps_original_deadline(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, calls = _session(monkeypatch, [old, new])
+    async with session:
+        rollout = asyncio.create_task(
+            session.execute_rollout(task={}, policy=_policy(), rollout_id="original", timeout=0.1)
+        )
+        await _sent(old)
+        old.incoming.put_nowait(_frame("error", "original", {
+            "code": "ServerDraining", "message": "Not admitted",
+        }))
+        with pytest.raises(asyncio.TimeoutError):
+            await rollout
+        assert not session._uncertain
+        assert len(calls) == 1
+        assert new.sent.empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_unblocks_connection_age_rotation_with_pending_work(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, calls = _session(monkeypatch, [old, new], limit=2)
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="old"))
+        await _sent(old)
+        connection = session._active
+        connection.expires = 0
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="new"))
+        await asyncio.sleep(0)
+        assert len(calls) == 1
+        old.incoming.put_nowait(_frame("server-draining"))
+        await _sent(new)
+        assert not old.closed
+        _complete(new, "new")
+        _complete(old, "old")
+        await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
+async def test_multiple_draining_sockets_preserve_correlation_and_close(monkeypatch):
+    sockets = [_Socket() for _ in range(3)]
+    session, _, calls = _session(monkeypatch, sockets, limit=3)
+    tasks, connections = [], []
+    async with session:
+        for index, socket in enumerate(sockets):
+            task = asyncio.create_task(
+                session.execute_rollout(task={}, policy=_policy(), rollout_id=str(index))
+            )
+            tasks.append(task)
+            await _sent(socket)
+            connection = session._active
+            connections.append(connection)
+            if index < 2:
+                socket.incoming.put_nowait(_frame("server-draining"))
+                await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
+        assert len(calls) == 3
+        assert not any(socket.closed for socket in sockets)
+        with pytest.raises(ValueError, match="already pending"):
+            # Release one global permit without completing the duplicated ID.
+            _complete(sockets[2], "2")
+            await tasks[2]
+            await session.execute_rollout(task={}, policy=_policy(), rollout_id="0")
+        _complete(sockets[1], "1")
+        _complete(sockets[0], "0")
+        assert [result.rollout_id for result in await asyncio.gather(*tasks)] == ["0", "1", "2"]
+        assert not session._uncertain
+    assert all(socket.closed for socket in sockets)
+    assert all(connection.receiver.done() for connection in connections)
+    assert not session._connections
+
+
+@pytest.mark.asyncio
+async def test_close_cleans_both_active_and_draining_sockets(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, _ = _session(monkeypatch, [old, new], limit=2)
+    first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="old"))
+    await _sent(old)
+    connection = session._active
+    old.incoming.put_nowait(_frame("server-draining"))
+    await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
+    second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="new"))
+    await _sent(new)
+    await session.close()
+    outcomes = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(isinstance(outcome, RLERolloutUnknownOutcomeError) for outcome in outcomes)
+    assert [outcome.rollout_id for outcome in outcomes] == ["old", "new"]
+    assert old.closed and new.closed
+    assert not session._connections
+
+
+@pytest.mark.asyncio
+async def test_draining_disconnect_never_replays_old_work_or_cancels_new_sibling(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, calls = _session(monkeypatch, [old, new], limit=2)
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="old"))
+        await _sent(old)
+        connection = session._active
+        old.incoming.put_nowait(_frame("server-draining"))
+        await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="new"))
+        await _sent(new)
+        old.incoming.put_nowait(OSError("drain deadline expired"))
+        with pytest.raises(RLERolloutUnknownOutcomeError) as error:
+            await first
+        assert error.value.rollout_id == "old"
+        _complete(new, "new")
+        assert (await second).rollout_id == "new"
+        assert session._uncertain
+        assert len(calls) == 2
+        assert old.sent.empty() and new.sent.empty()
+
+
+@pytest.mark.asyncio
+async def test_idle_drain_closes_old_socket_before_next_submission(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, calls = _session(monkeypatch, [old, new])
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="first"))
+        await _sent(old)
+        connection = session._active
+        _complete(old, "first")
+        await first
+        old.incoming.put_nowait(_frame("server-draining"))
+        await asyncio.wait_for(connection.receiver, timeout=1)
+        await asyncio.wait_for(connection.closing, timeout=1)
+        assert old.closed
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="second"))
+        await _sent(new)
+        _complete(new, "second")
+        await second
+        assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_handshake_does_not_interrupt_draining_results(monkeypatch):
+    old = _Socket()
+    session, _, _ = _session(monkeypatch, [old], limit=2)
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="old"))
+        await _sent(old)
+        connection = session._active
+        old.incoming.put_nowait(_frame("server-draining"))
+        await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
+
+        async def fail(*_args, **_kwargs):
+            raise OSError("replacement unavailable")
+
+        monkeypatch.setattr(transport, "_connect_openenv_websocket", fail)
+        with pytest.raises(OSError, match="replacement unavailable"):
+            await session.execute_rollout(task={}, policy=_policy(), rollout_id="new")
+        assert not session._uncertain
+        assert not old.closed
+        _complete(old, "old")
+        assert (await first).rollout_id == "old"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_replacement_handshake_preserves_old_rollout(monkeypatch):
+    old = _Socket()
+    session, _, _ = _session(monkeypatch, [old], limit=2)
+    connecting = asyncio.Event()
+    async with session:
+        first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="old"))
+        await _sent(old)
+        connection = session._active
+        old.incoming.put_nowait(_frame("server-draining"))
+        await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
+
+        async def wait(*_args, **_kwargs):
+            connecting.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(transport, "_connect_openenv_websocket", wait)
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="new"))
+        await asyncio.wait_for(connecting.wait(), timeout=1)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert not session._uncertain
+        assert not old.closed
+        _complete(old, "old")
+        assert (await first).rollout_id == "old"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_known_drain_rejection_does_not_create_unknown_outcome(monkeypatch):
+    old, new = _Socket(), _Socket()
+    session, _, calls = _session(monkeypatch, [old, new])
+    async with session:
+        rejected = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="rejected"))
+        await _sent(old)
+        connection = session._active
+        old.incoming.put_nowait(_frame("error", "rejected", {
+            "code": "ServerDraining", "message": "Not admitted", "retryable": True,
+        }))
+        await asyncio.wait_for(connection.replaceable.wait(), timeout=1)
+        rejected.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await rejected
+        assert not session._uncertain
+        assert len(calls) == 1
+        second = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="new"))
+        await _sent(new)
+        _complete(new, "new")
+        assert (await second).rollout_id == "new"
 
 
 @pytest.mark.asyncio
@@ -788,6 +1051,55 @@ async def test_loopback_shared_socket_multiplexes_twenty_calls_and_closes(monkey
             await asyncio.wait_for(closed.wait(), timeout=1)
             assert receiver.done()
             assert session._active is None
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_loopback_drain_opens_replacement_before_original_completes(monkeypatch):
+    connections, received = [], []
+    draining = asyncio.Event()
+    replacement_completed = asyncio.Event()
+
+    async def handler(socket):
+        connections.append(socket)
+        index = len(connections)
+        assert socket.request.headers["aml-user-token"] == f"token-{index}"
+        header, _ = deserialize_rollout_frame(await socket.recv(), DEFAULT_MAX_RESPONSE_BYTES)
+        rollout_id = header["rollout_id"]
+        received.append(rollout_id)
+        if index == 1:
+            await socket.send(_frame("server-draining", payload={
+                "drain_timeout_seconds": 1800, "retry_after_seconds": 1,
+            }))
+            draining.set()
+            await replacement_completed.wait()
+        await socket.send(_frame("progress", rollout_id, {"stage": "running"}))
+        await socket.send(_frame("completed", rollout_id, {"rollout_id": rollout_id}))
+        if index == 2:
+            replacement_completed.set()
+        await socket.wait_closed()
+
+    async with serve(handler, "127.0.0.1", 0, subprotocols=["rle.execute-rollout.v2"]) as server:
+        client, session, credential = _loopback_client(monkeypatch, server, limit=2)
+        progress = []
+        try:
+            async with session:
+                first = asyncio.create_task(session.execute_rollout(
+                    task={}, policy=_policy(), rollout_id="old", progress_callback=progress.append
+                ))
+                await asyncio.wait_for(draining.wait(), timeout=2)
+                await asyncio.wait_for(session._active.replaceable.wait(), timeout=1)
+                second = asyncio.create_task(session.execute_rollout(
+                    task={}, policy=_policy(), rollout_id="new", progress_callback=progress.append
+                ))
+                results = await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+                assert [result.rollout_id for result in results] == ["old", "new"]
+                assert received == ["old", "new"]
+                assert {update["rollout_id"] for update in progress} == {"old", "new"}
+                assert credential.calls == len(connections) == 2
+                assert not session._uncertain
+            assert not session._connections
         finally:
             await client.close()
 

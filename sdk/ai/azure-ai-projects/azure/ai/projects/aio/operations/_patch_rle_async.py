@@ -1275,7 +1275,9 @@ class RLEOperations:
     ) -> "AsyncRolloutClient":
         """Create a lazy asynchronous shared Execute Rollout client.
 
-        The session owns admission and a single socket. Its per-call timeout
+        The session owns admission and one active submission socket. Draining
+        sockets retain pending results while new work opens a replacement.
+        Its per-call timeout
         starts after concurrency admission and includes connection and execution.
         Queue waiting remains cancellable and wakes on closure or an unknown
         submitted outcome. Close the rollout client before the project client.

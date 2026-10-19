@@ -1,5 +1,12 @@
 # Release History
 
+## 2.7.0b5 (Unreleased)
+
+### Features Added
+
+* Handle Execute Rollout `server-draining` notifications by retaining the old WebSocket for pending results and opening a credential-refreshed replacement for new submissions. One admission limit applies across active and draining connections; idle draining sockets are closed automatically.
+* Resubmit only explicit pre-execution `ServerDraining` admission rejections, with the same rollout ID and request, at most three submissions and a one-second delay between attempts within the original timeout. Other execution errors and ambiguous sends or disconnects are never replayed.
+
 ## 2.7.0b4 (Unreleased)
 
 ### Features Added
