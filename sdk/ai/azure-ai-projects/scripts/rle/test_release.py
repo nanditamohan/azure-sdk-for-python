@@ -191,6 +191,8 @@ def test_version_bumping_rejects_invalid_inputs(tmp_path, base, bump):
 def test_public_paths_allow_beta_and_retained_development_artifacts(version):
     release.validate_public_paths([
         f"{release.PUBLIC_PATH}/registry.json",
+        f"{release.PUBLIC_PATH}/README.md",
+        f"{release.PUBLIC_PATH}/install_rle_sdk.py",
         f"{release.PUBLIC_PATH}/wheels/{version}/azure_ai_projects-{version}-py3-none-any.whl",
     ])
 
@@ -369,11 +371,39 @@ def test_releases_preserve_versions_and_leave_changes_unstaged(tmp_path, first_v
     assert release.git(checkout, "rev-parse", "HEAD") == committed_head
 
 
+def test_release_preserves_existing_public_installation_files(tmp_path):
+    checkout = public_checkout(tmp_path)
+    public = checkout / release.PUBLIC_PATH
+    public.mkdir(parents=True)
+    installation_files = {
+        "README.md": "# Public SDK installation\n",
+        "install_rle_sdk.py": '"""Standalone public SDK installer."""\n',
+    }
+    for name, content in installation_files.items():
+        (public / name).write_text(content)
+    release.git(checkout, "add", "--", release.PUBLIC_PATH)
+    release.git(checkout, "commit", "-m", "Publish installation documentation and installer")
+    original_head = release.git(checkout, "rev-parse", "HEAD")
+    source = tmp_path / "source"
+    source.mkdir()
+
+    release.ensure_public_checkout(checkout, source)
+    wheel = tmp_path / f"azure_ai_projects-{VERSION}-py3-none-any.whl"
+    wheel.write_bytes(wheel_bytes())
+    release.prepare_release(checkout, wheel, VERSION)
+
+    for name, content in installation_files.items():
+        assert (public / name).read_text() == content
+    assert release.git(checkout, "rev-parse", "HEAD") == original_head
+    assert release.git(checkout, "diff", "--cached", "--name-only") == ""
+
+
 @pytest.mark.parametrize("path", [
     "sdk/ai/azure-ai-projects/azure/ai/projects/rle/__init__.py",
     f"{release.PUBLIC_PATH}/release.py",
-    f"{release.PUBLIC_PATH}/install_rle_sdk.py",
-    f"{release.PUBLIC_PATH}/README.md",
+    f"{release.PUBLIC_PATH}/install_other_sdk.py",
+    f"{release.PUBLIC_PATH}/README.private.md",
+    f"{release.PUBLIC_PATH}/docs/README.md",
     f"{release.PUBLIC_PATH}/wheels/{VERSION}/secret.txt",
     "sdk/ai/azure-ai-projects/rle-external/registry.json",
 ])

@@ -30,6 +30,9 @@ detached HEADs fail; existing branch commits and conflicting ignored files are
 never overwritten. The script checks for allowed release changes, refreshes the
 checkout without merging or resetting your work, and rechecks it before building.
 Diverged branches fail. It never stages files, commits, or pushes.
+The public branch's standalone `README.md` and `install_rle_sdk.py` are allowed
+distribution files and are preserved during preparation. Unrelated source files
+remain rejected.
 
 Patch is the default. Versioning bumps the highest core version in the SDK or
 registry with a `b1` suffix: `2.7.0b1` becomes `2.7.1b1`, `2.8.0b1`, or `3.0.0b1`.

@@ -175,7 +175,11 @@ def public_changes(checkout: Path) -> list[str]:
 
 
 def validate_public_paths(paths: list[str]) -> None:
-    allowed = {f"{PUBLIC_PATH}/registry.json"}
+    allowed = {
+        f"{PUBLIC_PATH}/registry.json",
+        f"{PUBLIC_PATH}/README.md",
+        f"{PUBLIC_PATH}/install_rle_sdk.py",
+    }
     wheel_pattern = (
         rf"{re.escape(PUBLIC_PATH)}/wheels/({VERSION_PATTERN})/"
         rf"azure_ai_projects-\1-py3-none-any\.whl"
