@@ -1269,18 +1269,22 @@ class RLEOperations:
         environment_name: str,
         environment_version: str,
         job_id: Optional[str] = None,
-        max_concurrent_rollouts: int = 16,
         *,
         server_managed_token_renewal: bool = False,
     ) -> "AsyncRolloutClient":
         """Create a lazy asynchronous shared Execute Rollout client.
 
-        The session owns admission and one active submission socket. Draining
+        The SDK manages admission for up to 32 concurrent rollouts per client,
+        with no public concurrency override. The session owns one active submission socket. Draining
         sockets retain pending results while new work opens a replacement.
         Its per-call timeout
         starts after concurrency admission and includes connection and execution.
-        Queue waiting remains cancellable and wakes on closure or an unknown
-        submitted outcome. Close the rollout client before the project client.
+        Queue waiting remains cancellable and wakes on closure or a session-level
+        protocol failure. An unknown outcome affects only its awaiting call.
+        Close the rollout client before the project client.
+        If a socket disconnects, only its unfinished rollouts switch to HTTP
+        status/result recovery with their original IDs and deadlines. Healthy
+        sockets are not polled and submitted execution is never replayed.
 
         :param environment_name: Published environment name.
         :type environment_name: str
@@ -1288,8 +1292,6 @@ class RLEOperations:
         :type environment_version: str
         :param job_id: Optional job identifier attached to every rollout.
         :type job_id: str or None
-        :param max_concurrent_rollouts: Global session admission limit, from 1 through 64. Default 16.
-        :type max_concurrent_rollouts: int
         :keyword server_managed_token_renewal: Keep a healthy socket open regardless of age or token
             expiry. Requires service-side delegated token renewal and long-lived connections.
             Default False retains age/token-based connection replacement.
@@ -1300,7 +1302,7 @@ class RLEOperations:
         from ._rollout_client_async import AsyncRolloutClient
 
         return AsyncRolloutClient(
-            self, environment_name, environment_version, job_id, max_concurrent_rollouts,
+            self, environment_name, environment_version, job_id,
             server_managed_token_renewal=server_managed_token_renewal,
         )
 

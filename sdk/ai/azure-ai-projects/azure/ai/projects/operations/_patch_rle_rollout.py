@@ -195,11 +195,9 @@ def build_rollout_body(
     )
 
 
-def validate_rollout_session(environment_name: str, environment_version: str, limit: int) -> None:
+def validate_rollout_session(environment_name: str, environment_version: str) -> None:
     if not environment_name or not environment_version:
         raise ValueError("environment_name and environment_version are required")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
-        raise ValueError("max_concurrent_rollouts must be an integer between 1 and 64")
 
 
 def validate_rollout_options(timeout: float, max_response_bytes: int) -> None:

@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 import asyncio  # pylint: disable=do-not-import-asyncio
+import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Mapping, Optional
+from urllib.parse import quote
 
+from azure.core.exceptions import ServiceRequestError, ServiceResponseError
+from azure.core.rest import HttpRequest
+from websockets.exceptions import ConnectionClosed
 from websockets.typing import Subprotocol
 
 from ...operations._patch_rle_rollout import (
@@ -36,14 +41,20 @@ from ...operations._patch_rle_rollout import (
 from ...rle._rollout_models import HarnessConfiguration, RolloutPolicy, RolloutResult, SamplingOptions
 
 _LOGGER = logging.getLogger(__name__)
+_MAX_CONCURRENT_ROLLOUTS = 32
+_RECOVERY_API_VERSION = "2025-05-01"
+_RECOVERY_POLL_INTERVAL = 30
+_RECOVERY_RETRY_STATUSES = frozenset({404, 408, 429, 500, 502, 503, 504})
 
 
 class _Pending:
-    def __init__(self, callback: Any, limit: int) -> None:
+    def __init__(self, callback: Any, limit: int, deadline: float) -> None:
         self.future = asyncio.get_running_loop().create_future()
         self.callback = callback
         self.limit = limit
         self.terminal = False
+        self.deadline = deadline
+        self.lookup: Optional[asyncio.Task] = None
 
 
 class _Connection:
@@ -63,10 +74,11 @@ class AsyncRolloutClient:
 
     The timeout starts after concurrency admission. By default, renewal waits for pending
     calls to settle before replacing the socket. Server-managed token renewal
-    disables age/token-based replacement. Unknown submitted outcomes stop
-    new admission, not siblings or server execution. Draining sockets retain existing
+    disables age/token-based replacement. Unknown submitted outcomes affect only
+    their awaiting calls, not new admission or server execution. Draining sockets retain existing
     results while replacements accept new work. Only explicit pre-execution
-    ServerDraining rejections can be resubmitted; there is no durable recovery.
+    ServerDraining rejections can be resubmitted. A disconnected socket's pending
+    rollouts are recovered through HTTP lookup without replaying execution.
     """
 
     def __init__(
@@ -75,11 +87,10 @@ class AsyncRolloutClient:
         environment_name: str,
         environment_version: str,
         job_id: Optional[str] = None,
-        max_concurrent_rollouts: int = 16,
         *,
         server_managed_token_renewal: bool = False,
     ) -> None:
-        validate_rollout_session(environment_name, environment_version, max_concurrent_rollouts)
+        validate_rollout_session(environment_name, environment_version)
         if not isinstance(server_managed_token_renewal, bool):
             raise ValueError("server_managed_token_renewal must be a bool")
         self._operations = operations
@@ -87,10 +98,13 @@ class AsyncRolloutClient:
         self._name = environment_name
         self._version = environment_version
         self._job_id = job_id
-        self._admission = asyncio.Semaphore(max_concurrent_rollouts)
+        self._admission = asyncio.Semaphore(_MAX_CONCURRENT_ROLLOUTS)
         self._send_lock = asyncio.Lock()
         self._active: Optional[_Connection] = None
         self._connections: set[_Connection] = set()
+        self._pending_ids: set[str] = set()
+        self._recoveries: dict[str, _Pending] = {}
+        self._recovery_worker: Optional[asyncio.Task] = None
         self._closed_event = asyncio.Event()
         self._admission_stopped = asyncio.Event()
 
@@ -284,14 +298,147 @@ class AsyncRolloutClient:
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     self._stop_admission()
                     pending.future.set_exception(exc)
+        except (ConnectionClosed, OSError, EOFError) as exc:
+            connection.expires = 0
+            self._mark_draining(connection)
+            for rollout_id, pending in connection.pending.items():
+                if not pending.future.done():
+                    if self._closed:
+                        pending.future.set_exception(_RolloutConnectionLost(str(exc)))
+                    else:
+                        self._recoveries[rollout_id] = pending
+            if self._recoveries and not self._closed and self._recovery_worker is None:
+                self._recovery_worker = asyncio.create_task(self._recover_pending())
+                self._recovery_worker.add_done_callback(self._report_recovery_failure)
+            self._retire_connection(connection)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             connection.expires = 0
             for pending in connection.pending.values():
                 if not pending.future.done():
                     self._stop_admission()
-                    pending.future.set_exception(
-                        exc if isinstance(exc, ValueError) else _RolloutConnectionLost(str(exc))
-                    )
+                    pending.future.set_exception(exc)
+
+    def _report_recovery_failure(self, worker: asyncio.Task) -> None:
+        if worker.cancelled():
+            return
+        failure = worker.exception()
+        if failure is not None:
+            _LOGGER.error("Shared Execute Rollout recovery failed.", exc_info=failure)
+            self._stop_admission()
+            for pending in self._recoveries.values():
+                if not pending.future.done():
+                    pending.future.set_exception(failure)
+
+    async def _recovery_get(self, rollout_id: str, result: bool, limit: int) -> Optional[bytes]:
+        client = self._operations._pipeline_client  # pylint: disable=protected-access
+        config = self._operations._config  # pylint: disable=protected-access
+        path = f"/rl_environments/rollouts/{quote(rollout_id, safe='')}"
+        request = HttpRequest(
+            "GET",
+            path + ("/result" if result else ""),
+            params={"api-version": _RECOVERY_API_VERSION},
+            headers={"Accept": "application/json"},
+        )
+        request.url = client.format_url(request.url, endpoint=config.endpoint)
+        pipeline_response = await client._pipeline.run(  # pylint: disable=protected-access
+            request, stream=True, retry_total=0
+        )
+        response = pipeline_response.http_response
+        try:
+            if response.status_code in _RECOVERY_RETRY_STATUSES:
+                _LOGGER.debug(
+                    "Rollout %s recovery lookup returned HTTP %s.", rollout_id, response.status_code
+                )
+                return None
+            if response.status_code != 200:
+                raise RLERolloutError(
+                    response, code="RolloutRecoveryHttpError",
+                    message=f"Recovery lookup returned HTTP {response.status_code}.",
+                    rollout_id=rollout_id,
+                )
+            payload = bytearray()
+            async for chunk in response.iter_bytes():
+                if len(payload) + len(chunk) > limit:
+                    raise ValueError("Rollout recovery response exceeded its response safety budget")
+                payload.extend(chunk)
+            return bytes(payload)
+        finally:
+            await response.close()
+
+    async def _recover_one(self, rollout_id: str, pending: _Pending) -> Optional[RolloutResult]:
+        payload = await self._recovery_get(rollout_id, False, 64 * 1024)
+        if payload is None:
+            return None
+        status = json.loads(payload)
+        if (
+            not isinstance(status, Mapping)
+            or status.get("rollout_id") != rollout_id
+            or status.get("environment_name") != self._name
+            or status.get("environment_version") != self._version
+            or status.get("job_id") != self._job_id
+        ):
+            raise ValueError("Rollout recovery returned invalid or mismatched metadata")
+        if status.get("status") == "failed":
+            pending.terminal = True
+            raise RLERolloutError(
+                None, code="RolloutFailed",
+                message="The service reports that the disconnected rollout failed.",
+                rollout_id=rollout_id,
+            )
+        if status.get("status") == "completed":
+            payload = await self._recovery_get(
+                rollout_id, True, min(pending.limit, DEFAULT_MAX_RESPONSE_BYTES)
+            )
+            return deserialize_rollout_payload(payload, rollout_id) if payload is not None else None
+        if status.get("status") != "running":
+            raise ValueError("Rollout recovery returned an unknown rollout status")
+        return None
+
+    async def _poll_recovery(self, rollout_id: str, pending: _Pending) -> None:
+        try:
+            result = await asyncio.wait_for(
+                self._recover_one(rollout_id, pending),
+                timeout=min(30.0, max(0.0, pending.deadline - time.monotonic())),
+            )
+        except (asyncio.TimeoutError, ServiceRequestError, ServiceResponseError) as exc:
+            _LOGGER.debug("Rollout %s recovery lookup failed: %s", rollout_id, exc)
+        except (ValueError, RLERolloutError) as exc:
+            if not pending.future.done():
+                pending.future.set_exception(exc)
+        else:
+            if result is not None and not pending.future.done():
+                pending.terminal = True
+                pending.future.set_result(result)
+
+    async def _recover_pending(self) -> None:
+        _LOGGER.warning("Execute Rollout socket disconnected; starting shared HTTP recovery.")
+        tasks: list[asyncio.Task] = []
+        try:
+            while self._recoveries and not self._closed:
+                for rollout_id, pending in tuple(self._recoveries.items()):
+                    if pending.future.done():
+                        self._recoveries.pop(rollout_id, None)
+                if not self._recoveries:
+                    return
+                await asyncio.sleep(_RECOVERY_POLL_INTERVAL)
+                batch = [
+                    (rollout_id, pending) for rollout_id, pending in self._recoveries.items()
+                    if not pending.future.done()
+                ]
+                tasks = []
+                for rollout_id, pending in batch:
+                    pending.lookup = asyncio.create_task(self._poll_recovery(rollout_id, pending))
+                    tasks.append(pending.lookup)
+                outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+                for (_, pending), outcome in zip(batch, outcomes):
+                    if isinstance(outcome, BaseException) and not pending.future.done():
+                        pending.future.set_exception(outcome)
+        finally:
+            if self._recovery_worker is asyncio.current_task():
+                self._recovery_worker = None
+            for lookup in tasks:
+                lookup.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def execute_rollout(
         self,
@@ -308,9 +455,12 @@ class AsyncRolloutClient:
         """Execute with a default 1860-second timeout starting after SDK admission.
 
         Queue waiting does not consume the timeout, but is cancellable and wakes
-        on close or an unaccounted outcome. The deadline then includes renewal,
+        on close or a session-level protocol failure. The deadline then includes renewal,
         credentials, handshake, send serialization and execution. Submitted
-        timeout/cancellation/disconnect raises an unknown outcome with the original ID.
+        timeout/cancellation raises an unknown outcome with the original ID. A
+        disconnected socket's pending rollouts use HTTP status/result recovery
+        within the same deadline; execution is never replayed. An unknown outcome
+        does not prevent this client from admitting subsequent rollouts.
 
         :keyword task: Task record passed to the environment's reset.
         :paramtype task: any
@@ -366,9 +516,10 @@ class AsyncRolloutClient:
                             raise RLERolloutError(
                                 None, code="RolloutConnectionClosed", message="Connection closed before submission."
                             )
-                        if any(body.rollout_id in item.pending for item in self._connections):
+                        if body.rollout_id in self._pending_ids:
                             raise ValueError("rollout_id is already pending in this session")
-                        pending = _Pending(progress_callback, max_response_bytes)
+                        pending = _Pending(progress_callback, max_response_bytes, deadline)
+                        self._pending_ids.add(body.rollout_id)
                         connection.pending[body.rollout_id] = pending
                         connection.replaceable.clear()
                         # Without an admission ACK, even an interrupted send is ambiguous.
@@ -385,19 +536,26 @@ class AsyncRolloutClient:
                         if attempt >= 3:
                             raise failure
                     elif attempted:
-                        self._stop_admission()
                         # Preserve callback/protocol errors instead of swallowing them.
                         if pending is not None and pending.future.done() and not pending.future.cancelled():
                             failure = pending.future.exception()
                             if failure is not None and not isinstance(failure, _RolloutConnectionLost):
+                                self._stop_admission()
                                 if failure is exc:
                                     raise
                                 raise failure from exc
+                        if (
+                            connection is not None
+                            and isinstance(exc, (ConnectionClosed, OSError, EOFError))
+                            and not isinstance(exc, asyncio.TimeoutError)
+                        ):
+                            connection.expires = 0
+                            self._mark_draining(connection)
                         raise RLERolloutUnknownOutcomeError(
                             rollout_id=body.rollout_id,
                             message=(
                                 "Submitted rollout outcome is unknown after send failure, "
-                                "cancellation, timeout, closure or disconnect."
+                                "cancellation, timeout, closure or unsuccessful disconnect recovery."
                             ),
                         ) from exc
                     elif isinstance(exc, RLERolloutError):
@@ -407,11 +565,21 @@ class AsyncRolloutClient:
                         raise
                 finally:
                     if pending is not None and connection is not None:
+                        self._pending_ids.discard(body.rollout_id)
                         connection.pending.pop(body.rollout_id, None)
                         if not pending.future.done():
                             pending.future.cancel()
                         elif not pending.future.cancelled():
                             pending.future.exception()
+                        if pending.lookup is not None:
+                            pending.lookup.cancel()
+                            await asyncio.gather(pending.lookup, return_exceptions=True)
+                        self._recoveries.pop(body.rollout_id, None)
+                        if not self._recoveries and self._recovery_worker is not None:
+                            worker = self._recovery_worker
+                            self._recovery_worker = None
+                            worker.cancel()
+                            await asyncio.gather(worker, return_exceptions=True)
                         if not connection.pending:
                             connection.replaceable.set()
                             if connection.draining:
@@ -425,6 +593,9 @@ class AsyncRolloutClient:
         self._closed_event.set()
         self._admission_stopped.set()
         try:
+            if self._recovery_worker is not None:
+                self._recovery_worker.cancel()
+                await asyncio.gather(self._recovery_worker, return_exceptions=True)
             connections = tuple(self._connections)
             for connection in connections:
                 for pending in connection.pending.values():

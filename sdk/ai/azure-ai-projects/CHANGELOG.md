@@ -2,8 +2,14 @@
 
 ## 2.7.0b5 (Unreleased)
 
+### Breaking Changes
+
+* Removed `max_concurrent_rollouts` from `rle.get_rollout_client()` and `AsyncRolloutClient`. The SDK now manages shared rollout concurrency internally at 32 per client.
+
 ### Features Added
 
+* Recover unfinished rollouts after their WebSocket disconnects by polling HTTP status/result endpoints with their original IDs. One client-wide worker waits 30 seconds before the first round and between subsequent rounds. Subsequent socket losses add pending IDs to the same list without restarting its timer. Recovery retains the original timeout and shared admission permits, and never replays execution. Healthy and still-connected draining sockets are not polled.
+* Report an unknown submitted outcome only to the affected call without stopping queued or future submissions. Preserve explicit errors and never replay the unknown rollout.
 * Handle Execute Rollout `server-draining` notifications by retaining the old WebSocket for pending results and opening a credential-refreshed replacement for new submissions. One admission limit applies across active and draining connections; idle draining sockets are closed automatically.
 * Resubmit only explicit pre-execution `ServerDraining` admission rejections, with the same rollout ID and request, at most three submissions and a one-second delay between attempts within the original timeout. Other execution errors and ambiguous sends or disconnects are never replayed.
 
