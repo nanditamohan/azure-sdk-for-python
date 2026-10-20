@@ -1,8 +1,39 @@
 # Release History
 
-## 2.8.0 (Unreleased)
+## 2.7.0b5 (Unreleased)
 
 ### Features Added
+
+* Handle Execute Rollout `server-draining` notifications by retaining the old WebSocket for pending results and opening a credential-refreshed replacement for new submissions. One admission limit applies across active and draining connections; idle draining sockets are closed automatically.
+* Resubmit only explicit pre-execution `ServerDraining` admission rejections, with the same rollout ID and request, at most three submissions and a one-second delay between attempts within the original timeout. Other execution errors and ambiguous sends or disconnects are never replayed.
+
+## 2.7.0b4 (Unreleased)
+
+### Features Added
+
+* Integrated the latest RLE harness support from `main`. HTTP operations and the shared async rollout client use the same `HarnessConfiguration` request model while preserving job correlation.
+
+### Breaking Changes
+
+* Standardized per-rollout `harness` arguments on `HarnessConfiguration`. Callers using dictionaries should construct the typed model instead.
+
+## 2.7.0b3 (Unreleased)
+
+### Bugs Fixed
+
+* Validate the complete outbound Execute Rollout frame against the service's 4 MiB inbound limit before sending, without interrupting sibling rollouts.
+* Close or abort the WebSocket even when client closure is cancelled while joining its receiver.
+
+### Features Added
+
+* Renamed the preview factory to `get_rollout_client()` and its returned type to `AsyncRolloutClient`, matching `get_openenv_client()`. The previous `open_rollout_session()` name is removed without an alias.
+* Added `server_managed_token_renewal=True` to async rollout sessions. This opt-in keeps a healthy socket open beyond its age and handshake-token expiry when RLE and Capture Proxy renew delegated credentials server-side. Initial and replacement handshakes still require valid credentials; submitted disconnects remain explicit unknown outcomes without replay. The default connection renewal policy is unchanged.
+
+## 2.7.0b2 (Unreleased)
+
+### Features Added
+
+* Added optional per-request `harness` overrides to Execute Rollout HTTP operations and shared async rollout sessions.
 
 * Added private-preview Reinforcement Learning Environments (RLE) support through `AIProjectClient.rle` when constructed with `allow_preview=True`, including OpenEnv instance lifecycle management and environment management operations.
 * Added WebSocket interactions for leased OpenEnv instances through `OpenEnvInstance.open_websocket()` and its asynchronous equivalent, including text and binary messages, query parameters, subprotocol negotiation, and bounded retries for transient opening-handshake failures. Initial connections make at most three attempts, cap each attempt at 25 seconds and the overall connection at 90 seconds, and use full-jitter backoff.
@@ -13,6 +44,9 @@
 
 * RLE client types now live in `azure.ai.projects.rle` without the `RLE` prefix, for example `rle.Instance`, `rle.InstanceStatus`, `rle.StepResult`, `rle.RolloutRequest`, `rle.LoomPolicy` and `rle.FoundryDeploymentPolicy`. The generated types remain importable from `azure.ai.projects.models` for the generated operations but are no longer listed in its `__all__`.
 * Added `FoundryDeploymentPolicy`, which lets `rle.execute_rollout()` sample a model deployment in the project for eval instead of a Loom checkpoint. It needs only `deployment_name` and `project_endpoint`, uses the client's own credential, and returns a text-level, non-trainable result. Use `LoomPolicy` for training.
+* Added async-only `rle.get_rollout_client(environment_name, environment_version, job_id=None, max_concurrent_rollouts=16)` with one shared Execute Rollout socket, SDK-owned admission, serialized sends, rollout-ID dispatch and correlated progress. It reuses the existing OpenEnv authenticated connection and bounded handshake retries. Age/credential renewal pauses new submissions until pending calls settle, then replaces the socket without an overlapping connection pool. Existing sync and async `execute_rollout` retain their HTTP defaults.
+* Submitted disconnect, timeout, cancellation and closure raise `RLERolloutUnknownOutcomeError` with the original rollout ID and conservatively stop new admission. No execution replay, automatic durable recovery, drain-aware routing or server cancellation is issued; interrupted pending work is not guaranteed to complete. Closure and unknown outcomes awaken queued callers, and local socket cleanup is bounded. The default 1860-second call timeout starts after SDK concurrency admission; queue waiting does not consume it and remains cancellable.
+* WebSocket logs redact both identity headers. Positive caller response budgets above 8 MiB are accepted while protocol payloads remain capped at 8 MiB and headers at 4 KiB; duplicate frame header keys are rejected.
 
 * Added `rle.HarnessConfiguration` and an optional `harness` keyword on `rle.execute_rollout()` to choose the callable target for one rollout: `gym` (default), `byoh` with an agent `endpoint` and `protocol`, or `package` with a `name`. For `protocol="responses"`, pass the Foundry agent URL (`{project_endpoint}/agents/{agent_name}`); the service appends the Responses protocol path.
 

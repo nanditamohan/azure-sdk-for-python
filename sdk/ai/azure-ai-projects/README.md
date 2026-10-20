@@ -372,6 +372,142 @@ For more information, see [Configure logging in the Azure libraries for Python](
 
 To report an issue with the client library, or request additional features, please open a [GitHub issue here](https://github.com/Azure/azure-sdk-for-python/issues). Mention the package name "azure-ai-projects" in the title or content.
 
+## Shared RLE rollout sessions (private preview)
+
+Construct the client with `allow_preview=True`. For training, open one session for the
+published environment version and share it across rollout calls:
+
+```python
+import asyncio
+from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy
+
+policy = LoomPolicy(
+    model_name="model",
+    project_endpoint="https://account.services.ai.azure.com/api/projects/project",
+    session_id="training-session",
+    checkpoint_id="checkpoint",
+)
+
+# project_client is azure.ai.projects.aio.AIProjectClient.
+async with project_client.rle.get_rollout_client(
+    environment_name="environment",
+    environment_version="1",
+    job_id="training-job",
+    max_concurrent_rollouts=16,
+) as session:
+    results = await asyncio.gather(
+        *(
+            session.execute_rollout(
+                task=task,
+                policy=policy,
+                harness=HarnessConfiguration(type="gym"),
+                rollout_id=f"training-job-{index}",
+                timeout=1860,
+                max_response_bytes=8 * 1024 * 1024,
+            )
+            for index, task in enumerate(tasks)
+        )
+    )
+```
+
+Shared sessions are asynchronous only. Entry is lazy: the first execution obtains
+credentials and opens the socket. Use `await session.close()` without a context manager,
+and close the session before the project client. Existing sync and async
+`client.rle.execute_rollout(...)` retain their HTTP default and do not create a session.
+
+Both HTTP operations and the shared rollout client use `HarnessConfiguration`
+for an optional per-rollout override. Omitting it uses the environment
+version's stored harness. For BYOH Responses, pass the agent base URL as `endpoint`;
+the service adds the Responses protocol path. Package execution requires service support.
+
+Outbound execute messages are limited to 4 MiB including their length prefix,
+header and payload, with a separate 4 KiB header limit. Oversized requests fail
+locally before submission and do not interrupt other pending rollouts.
+
+The SDK owns concurrency admission and **one active submission socket**. The limit defaults to 16
+and accepts integers from 1 through 64, conservatively capped at the inspected service's
+default per-socket capacity; this is not advertised or negotiated with the service.
+Sends are serialized and one receive dispatcher
+correlates out-of-order results by rollout ID. `progress_callback`, if supplied, receives
+a mapping containing `rollout_id`; it must be a lightweight synchronous callable.
+Callback exceptions and malformed progress are surfaced to the associated caller.
+
+For long jobs, the SDK stops new submissions at the age/token renewal boundary, waits
+for current pending calls to settle, then closes the old socket before opening its replacement.
+Deployment draining is different: existing work stays on the draining socket while new
+submissions open a replacement, without waiting for existing work to finish.
+Renewal is scheduled after at most
+1740 seconds or 60 seconds before credential expiry, whichever comes first.
+Every new connection refreshes credentials.
+Credentials must report their actual expiry in `AccessToken.expires_on`. In particular,
+adapters using a synthetic short expiry to control HTTP caching should supply a session-only
+credential with the actual provider expiry, rather than forcing rotation on every call.
+Tokens with 60 seconds or less remaining are rejected before submission.
+The handshake supplies both `Authorization` and `aml-user-token`; both are redacted by
+the SDK WebSocket logger.
+
+For deployments with server-side delegated token renewal, pass
+`server_managed_token_renewal=True` to `get_rollout_client`. This disables
+age/token-based replacement of a healthy socket; tokens are still acquired and
+validated for every initial or replacement handshake. No user token is sent in
+individual execute frames. RLE must renew the connection caller's token before
+downstream rollout setup, and Capture Proxy must renew tokens during model calls.
+The service must also support long-lived connections and the requested execution
+timeout. The current 30-minute service limits are not lifted by this option.
+Use this opt-in only after those service changes are deployed. The default remains
+the existing renewal policy. Disconnect, timeout and unknown-outcome handling are
+unchanged. Deployment-drain handoff is supported with either setting; durable
+disconnect recovery is not implemented.
+
+Connections reuse the existing OpenEnv `_connect_openenv_websocket` helper:
+up to three attempts for transient connectivity failures or HTTP 408, 429, 500,
+502, 503 and 504, with per-attempt timeouts up to 25 seconds, a 90-second connection
+budget and full-jitter delays up to two and four seconds. The remaining rollout
+deadline can shorten these bounds. Authentication and certificate failures are not retried.
+These are opening-handshake retries only. Execution errors are surfaced rather
+than replayed, except for the explicit `ServerDraining` admission rejection below. Generic `retryable=true`
+can describe a dependency failure after work started, not just an admission rejection.
+
+An interrupted send or abrupt disconnect raises `RLERolloutUnknownOutcomeError` with
+the **original** rollout ID. There is no automatic durable status/result polling or
+execution replay. WebSocket execution uses API version `2025-11-15-preview`.
+The default `timeout=1860` begins **after SDK concurrency admission**: queue waiting
+does not consume a rollout's timeout, so a large job is not given a job-wide 1860-second
+deadline. Queue waiting remains cancellable and awakens promptly on closure or an
+unknown submitted outcome. After admission, timeout includes renewal waiting, credentials,
+opening the connection, serialized send waiting and execution.
+Timeout/cancellation before attempting to send does not submit work or itself block future admission.
+
+On a `server-draining` notification, the SDK stops submitting to that connection.
+Its receiver continues dispatching progress and terminal results for existing rollouts.
+The next submission opens a replacement with fresh credentials; admission remains global
+across all connections, and an old connection is closed after its pending calls settle.
+Repeated notifications do not open additional sockets. Multiple successive deployments
+can leave several old connections delivering their original results.
+
+A rollout explicitly rejected with `ServerDraining` was not started by the service.
+Only this admission rejection is resubmitted, with the same rollout ID and request,
+at most three submissions and a one-second delay between attempts. The original
+post-admission deadline and concurrency permit cover all attempts. The service must
+preserve this pre-execution rejection contract; a generic retryable error is not enough.
+No signal migrates an already-running rollout to another pod. Completion still depends
+on the draining backend remaining alive long enough to deliver its terminal response.
+If it disconnects or the drain deadline expires first, unresolved rollouts raise explicit
+unknown outcomes with their original IDs and are never automatically replayed.
+
+Cancellation, timeout, and session close do not cancel server execution or siblings.
+If a submitted outcome cannot be accounted for, the session stops admitting new work;
+do not create a replacement session blindly and assume that server capacity was released.
+Queued callers are awakened by closure, receiver tasks are cancelled, and socket cleanup
+is bounded to five seconds. Submitted unresolved work raises an explicit unknown-outcome
+error. An already-dispatched completion wins a cancellation or disconnect race.
+No per-rollout cancel commands are issued. `max_response_bytes` is a positive per-call safety
+budget; a larger configured budget is accepted, but the WebSocket's 8 MiB payload bound still
+applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
+
+Deployment-drain handoff is in **2.7.0b5 (Unreleased)** and requires publishing that
+development wheel before consumers pin it.
+
 ## Next steps
 
 Have a look at the [Samples][samples] folder, containing fully runnable Python code for synchronous and asynchronous clients.
