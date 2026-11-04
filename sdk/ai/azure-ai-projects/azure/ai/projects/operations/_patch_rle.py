@@ -106,7 +106,9 @@ _TRANSIENT_HEALTH_STATUS_CODES = frozenset(
 
 class _RedactingWebSocketLogger(logging.LoggerAdapter):
     def log(self, level: int, msg: object, *args: Any, **kwargs: Any) -> None:
-        if len(args) >= 2 and str(args[0]).lower() in ("authorization", "aml-user-token"):
+        if len(args) >= 2 and str(args[0]).lower() in (
+            "authorization", "aml-user-token", "x-ms-finetune-identity"
+        ):
             args = (args[0], "REDACTED", *args[2:])
         super().log(level, msg, *args, **kwargs)
 

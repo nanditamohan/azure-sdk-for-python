@@ -374,6 +374,8 @@ To report an issue with the client library, or request additional features, plea
 
 ## Shared RLE rollout sessions (private preview)
 
+### Legacy sessions (default)
+
 Construct the client with `allow_preview=True`. For training, open one session for the
 published environment version and share it across rollout calls:
 
@@ -535,6 +537,87 @@ applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
 
 Deployment-drain handoff is in **2.7.0b5 (Unreleased)** and requires publishing that
 development wheel before consumers pin it.
+
+### Durable queued sessions (explicit V3 opt-in)
+
+Use the same asynchronous public factory and typed request/result models:
+
+```python
+async with project_client.rle.get_rollout_client(
+    environment_name="environment",
+    environment_version="1",
+    job_id="ftjob-" + "1" * 24,  # Optional; use the actual canonical training job ID.
+    protocol_version="v3",
+    finetune_credential=finetune_credential,  # Optional, caller-owned app identity.
+) as session:
+    result = await session.execute_rollout(
+        task=task,
+        policy=policy,
+        harness=HarnessConfiguration(type="gym"),
+        timeout=1860,
+    )
+```
+
+Omitting `protocol_version` preserves the legacy v2/v1 negotiation and lifecycle
+described above. Explicit `"v3"` offers **only** `rle.execute-rollout.v3` and verifies
+the selected protocol. Disabled delivery, failed negotiation or disabled queued
+acceptance is an explicit error, never a fallback to legacy execution. Synchronous
+and asynchronous `rle.execute_rollout()` retain their HTTP defaults; shared
+WebSocket sessions remain asynchronous only.
+
+V3 `accepted` means durable admission, **not completion**. The SDK keeps the call
+pending through queued/running/finalizing state and worker retries, dispatches
+durable progress, and returns a full `RolloutResult` only on committed completion.
+Capture graphs, token arrays, rewards, and structured results retain the same
+typed mapping as legacy results. Progress callbacks receive `rollout_id`,
+`sequence`, and `attempt_id` alongside the progress fields; keep callbacks short
+and synchronous. Error messages are sanitized; inspect `RLERolloutError.code`
+for known service codes such as `QueuedAcceptanceDisabled`, `HistoryUnavailable`,
+or `queued_execution_failed`. Unknown service codes become `QueuedRolloutFailed`.
+History/dependency errors are not fabricated successes or automatic re-execution.
+
+One serialized command driver and an independent bounded receiver multiplex up to
+32 admitted logical calls. The original post-admission deadline and admission
+permit cover connection, execution, attachment recovery and complete result fetch.
+Queue waiting remains cancellable and wakes on close. On disconnect or credential
+rotation, submitted IDs are **attached**, never executed again, including after an
+ambiguous initial send. Each logical rollout permits at most three reattachments;
+consecutive connection failures are also bounded. Recovery never resets the timeout.
+The attach cursor is the last durable sequence actually received, including zero,
+or null before any event. State snapshots never advance it. Gaps, changed worker
+attempt IDs and replay of the committed terminal sequence are valid.
+
+V3 rollout IDs must be lowercase GUIDs without separators; SDK-generated IDs
+already satisfy this. Optional job IDs must use `ftjob-` followed by 24 lowercase
+hex digits. The project endpoint and exact environment name/version fix connection
+scope; every command retains the original job/rollout correlation.
+
+The project credential supplies `Authorization` and `aml-user-token`.
+An optional separate `finetune_credential` supplies `x-ms-finetune-identity` on
+handshake and result retrieval, preserving the consumed 2.7.0b7 identity contract.
+Both use the project's configured scopes and require real expiry more than
+60 seconds away. Connection lifetime is bounded by the earlier expiry and
+1740 seconds. Both credentials remain caller-owned. Separate fine-tuning
+credentials and V3 cannot use `server_managed_token_renewal=True`.
+V3 wire debug logging is disabled to avoid exposing credentials or training data.
+
+Large-result references must be canonical, correlated relative RLE result routes,
+not absolute URLs, Blob URLs or SAS URLs. The SDK retrieves the complete result
+through the **original configured project endpoint**, using fresh authenticated
+headers, no redirects and a streamed response-size bound. A summary is never
+substituted for the result. Unavailable, malformed, mismatched and oversized
+results produce explicit errors.
+
+Cancellation, detach, timeout and close affect local delivery only; they do not
+cancel remote work or prove capacity was released. A submitted unresolved call
+raises `RLERolloutUnknownOutcomeError` with its original ID. Never automatically
+choose a new ID and rerun it. Durable admission is not a guarantee of worker crash
+recovery: the SDK does not assume a server dispatcher or Running-work reclaim.
+Service gates, worker capacity, retention and authorization must be configured
+separately. Building/pinning this development wheel does not deploy the service or
+rebuild/select a training image.
+
+SDK API conventions follow the [Azure SDK Python Design Guidelines](https://azure.github.io/azure-sdk/python_design.html).
 
 ## Next steps
 

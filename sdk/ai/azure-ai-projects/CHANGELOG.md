@@ -1,5 +1,13 @@
 # Release History
 
+## 2.7.0b7.dev20261104+queuedv3.1 (Unreleased)
+
+### Features Added
+
+* Added explicit `protocol_version="v3"` to the asynchronous `rle.get_rollout_client()` factory. Queued sessions use durable acceptance/events and bounded original-ID attachment recovery without legacy fallback or execution replay. Legacy defaults and synchronous/asynchronous HTTP operations remain unchanged.
+* Preserved the consumed 2.7.0b7 wheel's optional `finetune_credential` identity contract on handshake and authorized HTTP retrieval, with both credentials bounding connection lifetime.
+* Added sanitized queued protocol errors, bounded canonical complete-result retrieval and offline real-WebSocket lifecycle coverage. This uniquely identified development build is not an official release.
+
 ## 2.7.0b5 (Unreleased)
 
 ### Breaking Changes

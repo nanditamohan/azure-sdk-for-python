@@ -116,6 +116,8 @@ async def _connect_openenv_websocket(
     timeout: float = _WEBSOCKET_CONNECTION_TIMEOUT_S,
     max_size: Optional[int] = None,
     close_timeout: Optional[float] = None,
+    logger: Any = _WEBSOCKET_LOGGER,
+    max_queue: Optional[int] = None,
 ) -> ClientConnection:
     deadline = time.monotonic() + min(timeout, _WEBSOCKET_CONNECTION_TIMEOUT_S)
     options: Dict[str, Any] = {}
@@ -123,6 +125,8 @@ async def _connect_openenv_websocket(
         options["max_size"] = max_size
     if close_timeout is not None:
         options["close_timeout"] = close_timeout
+    if max_queue is not None:
+        options["max_queue"] = max_queue
     for attempt in range(_WEBSOCKET_CONNECT_ATTEMPTS):
         try:
             return await websocket_connect(
@@ -133,7 +137,7 @@ async def _connect_openenv_websocket(
                     _remaining_websocket_timeout(deadline),
                 ),
                 subprotocols=subprotocols,
-                logger=_WEBSOCKET_LOGGER,
+                logger=logger,
                 **options,
             )
         except (
@@ -1271,8 +1275,14 @@ class RLEOperations:
         job_id: Optional[str] = None,
         *,
         server_managed_token_renewal: bool = False,
+        finetune_credential: Optional["AsyncTokenCredential"] = None,
+        protocol_version: Optional[str] = None,
     ) -> "AsyncRolloutClient":
         """Create a lazy asynchronous shared Execute Rollout client.
+
+        The following drain/HTTP recovery behavior describes the legacy default.
+        Set ``protocol_version="v3"`` for durable acceptance and original-ID
+        WebSocket attachment recovery, without execution replay or legacy fallback.
 
         The SDK manages admission for up to 32 concurrent rollouts per client,
         with no public concurrency override. The session owns one active submission socket. Draining
@@ -1296,6 +1306,16 @@ class RLEOperations:
             expiry. Requires service-side delegated token renewal and long-lived connections.
             Default False retains age/token-based connection replacement.
         :paramtype server_managed_token_renewal: bool
+        :keyword finetune_credential: Optional fine-tuning identity sent as
+            ``x-ms-finetune-identity``. The primary credential remains the user identity.
+            Both credentials bound connection lifetime and must have more than 60 seconds
+            remaining. Cannot be combined with server-managed token renewal.
+            The caller owns and closes this credential.
+        :paramtype finetune_credential: ~azure.core.credentials_async.AsyncTokenCredential or None
+        :keyword protocol_version: Set to ``"v3"`` for durable queued execution, without
+            legacy fallback. Omit for the unchanged v2/v1 preference. Accepted work survives
+            disconnection; recovery attaches the original ID within its original deadline.
+        :paramtype protocol_version: str or None
         :return: A lazy asynchronous context manager with ``execute_rollout`` and async ``close``.
         :rtype: ~azure.ai.projects.aio.operations._rollout_client_async.AsyncRolloutClient
         """
@@ -1304,6 +1324,8 @@ class RLEOperations:
         return AsyncRolloutClient(
             self, environment_name, environment_version, job_id,
             server_managed_token_renewal=server_managed_token_renewal,
+            finetune_credential=finetune_credential,
+            protocol_version=protocol_version,
         )
 
     @distributed_trace_async
