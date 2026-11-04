@@ -17,9 +17,16 @@ except ImportError as exc:  # pragma: no cover - dependency guard
         'Install them with `pip install "azure-ai-projects[rle]"`.'
     ) from exc
 
+from ._grade_context import GradeContext
+
 
 class GradeAction(Action):
     """An action containing the agent's response to grade.
+
+    RLE sends it as the terminal step of a rollout. Pass this class as the action class when creating
+    the OpenEnv server. RLE reads the server's ``/schema`` action schema, and it sends the ``context``
+    field only when that schema declares it, which this class does. Environments that use an older SDK
+    or a custom action class never see ``context``, and RLE grades them with ``response`` alone.
 
     :param response: The agent's response submitted for grading.
     :type response: str
@@ -28,10 +35,32 @@ class GradeAction(Action):
         target makes one available. ``None`` for targets or RLE versions that do not supply
         it.
     :type rollout_graph: dict or None
+    :param context: The grading context RLE builds after the harness finishes and its model calls
+        are captured: the trace, the final answer, why the run stopped, the task and more. See
+        :class:`~azure.ai.projects.rle.environments.GradeContext` for the fields. ``None`` when the
+        service did not send one. Read :attr:`grade_context` instead of this raw object to handle
+        both cases with one code path.
+    :type context: dict or None
     """
 
     response: str
     rollout_graph: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None
+
+    @property
+    def grade_context(self) -> GradeContext:
+        """The grading context for this action, with one code path for every service version.
+
+        This wraps :attr:`context` when RLE sent one. When it sent none, because the service predates the
+        contract, it is a synthesized legacy context: ``version`` is ``0``, ``response_text`` is
+        :attr:`response`, and every other field is empty.
+
+        :return: The read-only grading context.
+        :rtype: ~azure.ai.projects.rle.environments.GradeContext
+        """
+        if self.context is None:
+            return GradeContext({"version": 0, "response_text": self.response})
+        return GradeContext(self.context)
 
 
 class RLEnvironment(MCPEnvironment):

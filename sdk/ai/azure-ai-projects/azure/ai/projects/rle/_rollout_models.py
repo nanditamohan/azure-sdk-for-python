@@ -16,7 +16,8 @@ rollout is one request and one result.
 
 The result carries both halves of what a training run needs: ``reward`` (and ``success`` where a
 grader produced a verdict) and ``rollout``, the Capture Proxy graph, whose ``sequences`` hold the
-``input_ids``/``loss_mask``/``logprobs`` of every model turn the episode sampled.
+``input_ids``/``loss_mask``/``logprobs`` of every model turn the episode sampled. When an environment
+graded the rollout, ``grade`` also says how: its status and reward, and which grading contract it used.
 """
 
 from typing import Any, List, Literal, Mapping, Optional, overload
@@ -33,6 +34,7 @@ __all__ = [
     "RolloutResult",
     "RolloutEpisode",
     "RolloutStep",
+    "RolloutGrade",
 ]
 
 _VISIBILITY = ["read", "create", "update", "delete", "query"]
@@ -378,6 +380,62 @@ class RolloutEpisode(_Model):
         super().__init__(*args, **kwargs)
 
 
+class RolloutGrade(_Model):
+    """How the environment graded a rollout.
+
+    ``status`` is always ``"graded"`` today, because a grading failure is returned as an error and
+    never as a reward of 0. ``"failed"`` is reserved so that a failed grade can later be reported
+    here, with a ``None`` reward and an ``error`` saying why.
+
+    ``contract`` names the grading contract the reward came from. It is present only when the
+    environment graded with the context RLE builds from the captured model calls (see
+    :class:`~azure.ai.projects.rle.environments.GradeContext`). It is absent when RLE used the legacy
+    fallback for an environment that cannot take that context, which grades the final answer alone
+    before the model calls are captured.
+
+    :ivar status: ``"graded"`` when the environment produced ``reward``, or ``"failed"`` when grading
+     failed. Required.
+    :vartype status: str
+    :ivar reward: The reward the environment graded the rollout with. ``None`` when ``status`` is
+     ``"failed"``.
+    :vartype reward: float
+    :ivar contract: Version of the grading context contract the environment graded with. Absent when
+     RLE used the legacy fallback.
+    :vartype contract: int
+    :ivar error: Why grading failed. Present only when ``status`` is ``"failed"``.
+    :vartype error: str
+    """
+
+    status: str = rest_field(visibility=_VISIBILITY)
+    """``graded`` when the environment produced a reward, or ``failed`` when grading failed. Required."""
+    reward: Optional[float] = rest_field(visibility=_VISIBILITY)
+    """The reward the environment graded the rollout with. ``None`` when grading failed."""
+    contract: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Version of the grading context contract the environment graded with. Absent for the legacy fallback."""
+    error: Optional[str] = rest_field(visibility=_VISIBILITY)
+    """Why grading failed. Present only when ``status`` is ``failed``."""
+
+    @overload
+    def __init__(
+        self,
+        *,
+        status: str,
+        reward: Optional[float] = None,
+        contract: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """
+        :param mapping: raw JSON to initialize the model.
+        :type mapping: Mapping[str, Any]
+        """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+
 class RolloutResult(_Model):
     """What one completed rollout produced.
 
@@ -385,6 +443,9 @@ class RolloutResult(_Model):
     grader: an environment reports reward, and inferring a boolean from it would state a result
     the environment never gave. Read ``reward`` for those, and ``success`` only where a Harness
     grader supplied it.
+
+    ``grade`` is present when the service reports how the rollout was graded. ``reward``,
+    ``success`` and ``result`` keep their meaning whether or not it is.
 
     :ivar rollout_id: The identifier supplied on the request, returned unchanged.
     :vartype rollout_id: str
@@ -401,6 +462,8 @@ class RolloutResult(_Model):
     :vartype result: any
     :ivar episode: Gym/OpenEnv episode annotations. Absent for Harness and BYOH.
     :vartype episode: ~azure.ai.projects.rle.RolloutEpisode
+    :ivar grade: How the environment graded the rollout. Absent when the service did not report it.
+    :vartype grade: ~azure.ai.projects.rle.RolloutGrade
     """
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
@@ -415,6 +478,8 @@ class RolloutResult(_Model):
     """Optional structured target result."""
     episode: Optional[RolloutEpisode] = rest_field(visibility=_VISIBILITY)
     """Gym/OpenEnv episode annotations."""
+    grade: Optional[RolloutGrade] = rest_field(visibility=_VISIBILITY)
+    """How the environment graded the rollout."""
 
     @overload
     def __init__(
@@ -426,6 +491,7 @@ class RolloutResult(_Model):
         success: Optional[bool] = None,
         result: Optional[Any] = None,
         episode: Optional[RolloutEpisode] = None,
+        grade: Optional[RolloutGrade] = None,
     ) -> None: ...
 
     @overload

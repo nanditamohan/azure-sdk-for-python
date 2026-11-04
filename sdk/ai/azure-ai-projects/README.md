@@ -258,6 +258,42 @@ WebSocket step payloads are deserialized before `grade()` is called. If tools
 are already registered on a `FastMCP` server, pass it to
 `RLEnvironment(mcp_server=server)` from the subclass constructor.
 
+`GradeAction` also carries an optional `context`: everything RLE knows about the
+finished rollout. It holds an ATIF v1.8 `trace` of the captured model calls, the
+final `response_text`, why the run stopped (`termination_reason`), the `task`
+that `reset()` received, any `outputs` and `rewards` a remote harness reported,
+the rollout `id`, and the contract `version`. Read it through
+`action.grade_context`, a read-only mapping that also supports attribute access,
+so `context.response_text` and `context["response_text"]` are the same value:
+
+```python
+    def grade(
+        self,
+        action: GradeAction,
+        timeout_s: float | None = None,
+        **kwargs: Any,
+    ) -> Observation:
+        context = action.grade_context
+        looked_up = any(
+            call["function_name"] == "lookup_order"
+            for step in context.trace.get("steps", [])
+            for call in step.get("tool_calls", [])
+        )
+        is_correct = context.response_text == "shipped" and looked_up
+        return Observation(reward=float(is_correct), done=True)
+```
+
+Every field is always present, and a field with no source is empty (`""` or
+`{}`). Within a `version` RLE only adds fields, so ignore keys you do not know,
+and treat a `termination_reason` you do not recognize as `"unknown"`.
+
+RLE sends `context` only when the environment's `GET /schema` action schema
+declares it, which `GradeAction` does. Environments built on an older SDK or on
+a custom action class keep receiving only `response`, as before. The same holds
+for a service that predates the context: `grade_context` then returns a
+`version` `0` context whose `response_text` is `response` and whose other fields
+are empty, so one `grade()` implementation covers both.
+
 Use the SDK's `create_app` factory (same arguments and `FastAPI` return value
 as OpenEnv 0.6) to install request-scoped session routing automatically. Forward
 the supplied MCP endpoint, including its `rle_session_id` query parameter,

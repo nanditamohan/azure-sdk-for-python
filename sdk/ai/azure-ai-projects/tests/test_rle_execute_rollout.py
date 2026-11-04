@@ -14,7 +14,14 @@ import pytest
 
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.aio import AIProjectClient as AsyncAIProjectClient
-from azure.ai.projects.rle import FoundryDeploymentPolicy, HarnessConfiguration, LoomPolicy, SamplingOptions
+from azure.ai.projects.rle import (
+    FoundryDeploymentPolicy,
+    HarnessConfiguration,
+    LoomPolicy,
+    RolloutGrade,
+    RolloutResult,
+    SamplingOptions,
+)
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import (
     EXECUTE_ROLLOUT_API_VERSION,
@@ -307,6 +314,103 @@ def test_sequences_is_empty_when_the_graph_is_absent(rollout_server):
         result = _rollout(client, "math_rl", "1.0.6", task={}, policy=_policy())
 
     assert result.sequences == []
+
+
+def test_returns_the_grade_the_environment_reported(rollout_server):
+    recorder, endpoint = rollout_server
+    recorder.body = {
+        "rollout_id": "r1",
+        "reward": 0.75,
+        "success": True,
+        "grade": {"status": "graded", "reward": 0.75, "contract": 1},
+    }
+
+    with _client(endpoint) as client:
+        result = _rollout(client, "byoh_env", "1.0.0", task={}, policy=_policy())
+
+    assert isinstance(result.grade, RolloutGrade)
+    assert result.grade.status == "graded"
+    assert result.grade.reward == 0.75
+    assert result.grade.contract == 1
+    assert result.grade.error is None
+    # The top level fields keep their meaning next to the grade.
+    assert result.reward == 0.75
+    assert result.success is True
+
+
+def test_grade_has_no_contract_when_rle_used_the_legacy_fallback(rollout_server):
+    """``contract`` is how a caller tells the new grading contract from the legacy fallback."""
+    recorder, endpoint = rollout_server
+    recorder.body = {"rollout_id": "r1", "reward": 0.5, "grade": {"status": "graded", "reward": 0.5}}
+
+    with _client(endpoint) as client:
+        result = _rollout(client, "byoh_env", "1.0.0", task={}, policy=_policy())
+
+    assert result.grade.status == "graded"
+    assert result.grade.reward == 0.5
+    assert result.grade.contract is None
+    assert "contract" not in result.grade.as_dict()
+
+
+def test_grade_is_absent_when_the_service_does_not_report_it(rollout_server):
+    recorder, endpoint = rollout_server
+    recorder.body = {"rollout_id": "r1", "reward": 1.0}
+
+    with _client(endpoint) as client:
+        result = _rollout(client, "math_rl", "1.0.6", task={}, policy=_policy())
+
+    assert result.grade is None
+    assert "grade" not in result.as_dict()
+
+
+def test_a_failed_grade_has_no_reward_and_says_why():
+    """``failed`` is reserved for the future. It must never read as a reward of 0."""
+    result = RolloutResult(
+        {"rollout_id": "r1", "grade": {"status": "failed", "reward": None, "error": "grader crashed"}}
+    )
+
+    assert result.grade.status == "failed"
+    assert result.grade.reward is None
+    assert result.grade.error == "grader crashed"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"rollout_id": "r1", "reward": 1.0},
+        {"rollout_id": "r1", "reward": 1.0, "grade": {"status": "graded", "reward": 1.0, "contract": 1}},
+        {"rollout_id": "r1", "reward": 0.5, "grade": {"status": "graded", "reward": 0.5}},
+        {"rollout_id": "r1", "grade": {"status": "failed", "reward": None, "error": "grader crashed"}},
+    ],
+    ids=["no-grade", "new-contract", "legacy-fallback", "failed"],
+)
+def test_a_result_round_trips_with_and_without_a_grade(payload):
+    result = RolloutResult(payload)
+
+    assert result.as_dict() == payload
+    assert RolloutResult(result.as_dict()).as_dict() == payload
+
+
+def test_a_result_built_from_a_grade_object_serialises_it():
+    result = RolloutResult(
+        rollout_id="r1",
+        reward=1.0,
+        grade=RolloutGrade(status="graded", reward=1.0, contract=1),
+    )
+
+    assert result.as_dict() == {
+        "rollout_id": "r1",
+        "reward": 1.0,
+        "grade": {"status": "graded", "reward": 1.0, "contract": 1},
+    }
+    assert RolloutResult(result.as_dict()).grade.contract == 1
+
+
+def test_rollout_grade_is_exported_from_the_rle_namespace():
+    import azure.ai.projects.rle as rle
+
+    assert "RolloutGrade" in rle.__all__
+    assert rle.RolloutGrade is RolloutGrade
 
 
 # --------------------------------------------------------------------------------------

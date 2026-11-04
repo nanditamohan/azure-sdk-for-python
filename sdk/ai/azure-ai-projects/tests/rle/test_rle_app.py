@@ -30,6 +30,7 @@ class _SessionEnvironment(RLEnvironment):
         super().__init__()
         self.calls = 0
         self.closes = 0
+        self.graded = []
 
         @self.tool()
         def count(value: str, session_id: str = "tool-argument"):
@@ -46,6 +47,7 @@ class _SessionEnvironment(RLEnvironment):
         return Observation()
 
     def grade(self, action, timeout_s=None, **kwargs):
+        self.graded.append(action)
         return Observation(done=True, reward=float(self.calls), metadata={"episode": self.state.episode_id})
 
     def close(self):
@@ -122,7 +124,7 @@ def test_real_openenv_two_sessions_overwrite_and_repeated_calls(client):
     )
 
     with client.websocket_connect("/ws?" + urlencode({"session_id": first})) as socket:
-        socket.send_json({"type": "step", "data": {"answer": "answer"}})
+        socket.send_json({"type": "step", "data": {"response": "answer"}})
         graded = socket.receive_json()["data"]
         assert graded["done"] is True
         assert graded["reward"] == 2.0
@@ -132,6 +134,37 @@ def test_real_openenv_two_sessions_overwrite_and_repeated_calls(client):
     assert _rpc(client, "openenv/session/close", {"session_id": first})["result"]["closed"] is True
     assert environment.closes == 1
     assert _rpc(client, "openenv/session/close", {"session_id": second})["result"]["closed"] is True
+
+
+def test_real_openenv_app_advertises_context_and_delivers_it_to_grade(client):
+    # RLE reads this schema to decide whether to send ``context`` at all.
+    assert "context" in client.get("/schema").json()["action"]["properties"]
+
+    session_id = _create_session(client)
+    _reset(client, session_id, "context-episode")
+    context = {
+        "version": 1,
+        "id": "rollout-1",
+        "response_text": "42",
+        "termination_reason": "answered",
+        "task": {"answer": "42"},
+    }
+    with client.websocket_connect("/ws?" + urlencode({"session_id": session_id})) as socket:
+        socket.send_json({"type": "step", "data": {"response": "42", "context": context}})
+        with_context = socket.receive_json()
+        socket.send_json({"type": "step", "data": {"response": "42"}})
+        without_context = socket.receive_json()
+
+    assert with_context["type"] == "observation", with_context
+    assert without_context["type"] == "observation", without_context
+    environment = next(env for env in client.app.state.created if env.state.episode_id == "context-episode")
+    current, legacy = environment.graded
+    assert current.grade_context.version == 1
+    assert current.grade_context.task == {"answer": "42"}
+    assert legacy.context is None
+    assert legacy.grade_context.version == 0
+    assert legacy.grade_context.response_text == "42"
+    assert _rpc(client, "openenv/session/close", {"session_id": session_id})["result"]["closed"] is True
 
 
 def test_real_openenv_url_decoding_once_and_missing_params(client, monkeypatch):
