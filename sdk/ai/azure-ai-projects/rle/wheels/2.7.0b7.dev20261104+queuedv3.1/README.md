@@ -18,6 +18,57 @@ installation. Training requires rebuilding and selecting an image containing the
 pin; changing a recipe alone does not update an existing image. No service
 deployment, cloud/model run or live qualification is implied.
 
+## Private-repository delivery
+
+The configured repository is private. Anonymous raw URLs return 404 and are not
+a working image-build installation route. Its visibility and access controls
+were not changed. The immutable wheel is available to authorized readers at
+artifact commit `6a51573691d53e6b7ac8d115031fdd17dc508838`; the authenticated GitHub
+Contents API download was verified against the digest above.
+
+Use an **existing authorized prebuild credential route** to stage the wheel and
+verify its hash before Docker builds. Then `COPY` and install the staged wheel.
+Never put GitHub credentials into Docker `ARG`, `ENV`, layers, URLs, build logs,
+or this repository. Do not retain or pin temporary signed download URLs. If the
+build does not already have authorized repository-read access, enabling that
+route is a separate integration prerequisite, not a reason to use an unverified
+anonymous URL or silently fall back to another SDK.
+
+For example, with GitHub CLI already authenticated through the existing approved
+route, run this outside the image build and inside a fresh staging directory:
+
+```powershell
+@'
+import base64
+import hashlib
+import json
+import pathlib
+import subprocess
+
+endpoint = (
+    "repos/sujit-kamireddy/azure-sdk-for-python/contents/"
+    "sdk/ai/azure-ai-projects/rle/wheels/2.7.0b7.dev20261104%2Bqueuedv3.1/"
+    "azure_ai_projects-2.7.0b7.dev20261104%2Bqueuedv3.1-py3-none-any.whl"
+    "?ref=6a51573691d53e6b7ac8d115031fdd17dc508838"
+)
+response = subprocess.run(
+    ["gh", "api", endpoint], capture_output=True, check=True,
+)
+record = json.loads(response.stdout)
+if record.get("encoding") != "base64":
+    raise ValueError("Expected inline wheel content.")
+wheel = base64.b64decode(record["content"])
+digest = hashlib.sha256(wheel).hexdigest()
+expected = "1cca2b75a5f2fbfa864584bf7f0f830098bf4fe13519cc4e1a39b3bd60a9ea8e"
+if digest != expected:
+    raise ValueError("SDK wheel digest mismatch.")
+pathlib.Path(
+    "azure_ai_projects-2.7.0b7.dev20261104+queuedv3.1-py3-none-any.whl",
+).write_bytes(wheel)
+print("Verified SDK development wheel:", digest)
+'@ | python -
+```
+
 ## Public opt-in
 
 ```python
