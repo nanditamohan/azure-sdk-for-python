@@ -376,6 +376,10 @@ class _QueuedRolloutClient:
                             receive.result()
                         if rollout_id in attached or pending.future.done():
                             continue
+                        if time.monotonic() >= self._expires:
+                            await self._drop(receive)
+                            receive = None
+                            break
                         if pending.submitted:
                             pending.reconnects += 1
                             if pending.reconnects > _MAX_RECONNECTS:
@@ -390,6 +394,8 @@ class _QueuedRolloutClient:
                             pending.submitted = True
                         await self._send(frame, pending.deadline)
                         attached.add(rollout_id)
+                    if receive is None:
+                        continue
                     wake = asyncio.create_task(self._wake.wait())
                     try:
                         done, _ = await asyncio.wait(

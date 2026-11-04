@@ -1,5 +1,11 @@
 # Release History
 
+## 2.7.0b7.dev20261104+queuedv3.2 (Unreleased)
+
+### Bugs Fixed
+
+* Recheck queued WebSocket connection lifetime before each submission. If a backpressured send crosses credential or rotation expiry, reconnect before submitting further calls; already submitted calls retain original-ID attachment recovery, deadlines and admission permits.
+
 ## 2.7.0b7.dev20261104+queuedv3.1 (Unreleased)
 
 ### Features Added

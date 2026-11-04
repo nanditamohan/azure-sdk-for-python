@@ -515,6 +515,62 @@ async def test_receive_continues_while_serialized_sender_is_blocked(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_expiry_during_send_rotates_before_next_submission(monkeypatch):
+    first, replacement = _QueuedSocket(), _QueuedSocket()
+    session, credential, _ = _queued_session(monkeypatch, [first, replacement])
+    original_send = first.send
+    blocked = asyncio.Queue()
+    release = asyncio.Semaphore(0)
+
+    async def delayed_send(frame):
+        await original_send(frame)
+        blocked.put_nowait(None)
+        await release.acquire()
+
+    first.send = delayed_send
+    async with session:
+        warmup = _call(session, rollout_id="1" * 32)
+        await asyncio.wait_for(blocked.get(), 1)
+        second = _call(session, rollout_id="2" * 32)
+        third = _call(session, rollout_id="3" * 32)
+        client = session._queued
+
+        async def admitted():
+            while len(client._pending) != 3:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(admitted(), 1)
+        deadlines = {key: value.deadline for key, value in client._pending.items()}
+        permits = session._admission._value
+        release.release()
+        await asyncio.wait_for(blocked.get(), 1)
+        assert client._pending["2" * 32].submitted
+        assert not client._pending["3" * 32].submitted
+        client._expires = 0
+        release.release()
+
+        commands = [await _sent(replacement) for _ in range(3)]
+        assert first.closed
+        assert credential.calls == 2
+        assert first.sent.qsize() == 2
+        assert [(header["type"], header["rollout_id"]) for header, _ in commands] == [
+            ("attach", "1" * 32),
+            ("attach", "2" * 32),
+            ("execute", "3" * 32),
+        ]
+        assert [json.loads(raw) for _, raw in commands[:2]] == [
+            {"last_sequence": None},
+            {"last_sequence": None},
+        ]
+        assert {key: value.deadline for key, value in client._pending.items()} == deadlines
+        assert session._admission._value == permits
+        for header, _ in commands:
+            rollout_id = header["rollout_id"]
+            replacement.incoming.put_nowait(_frame("completed", rollout_id, _terminal(rollout_id)))
+        assert all(result.reward == 1 for result in await asyncio.gather(warmup, second, third))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["cancel", "timeout", "close"])
 async def test_submitted_cancellation_deadline_and_close_never_cancel_remote(monkeypatch, action):
     socket = _QueuedSocket()
