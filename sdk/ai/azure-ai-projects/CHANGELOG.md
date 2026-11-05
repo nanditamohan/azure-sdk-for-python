@@ -1,5 +1,11 @@
 # Release History
 
+## 2.7.0b7.dev20261104+queuedv3.3 (Unreleased)
+
+### Bugs Fixed
+
+* Match the queued service's bounded opaque job-ID contract instead of requiring a 24-hex suffix. Accept managed 32-hex and other safe `ftjob-` identifiers unchanged, retaining ASCII character and 991-character limits through execution and attachment recovery.
+
 ## 2.7.0b7.dev20261104+queuedv3.2 (Unreleased)
 
 ### Bugs Fixed

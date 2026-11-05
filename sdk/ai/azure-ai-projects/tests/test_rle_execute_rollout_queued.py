@@ -34,7 +34,7 @@ from test_rle_execute_rollout_websocket import (
     _session,
 )
 
-_JOB = "ftjob-" + "1" * 24
+_JOB = "ftjob-0123456789abcdef0123456789abcdef"
 _PROTOCOL = "rle.execute-rollout.v3"
 _RESULT_PREFIX = (
     "/rle/v1.0/subscriptions/11111111-1111-1111-1111-111111111111"
@@ -75,7 +75,7 @@ def _terminal(rollout_id, sequence=1, **options):
 
 
 @asynccontextmanager
-async def _running(monkeypatch, protocols=(_PROTOCOL,), **options):
+async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, **options):
     commands = asyncio.Queue()
     requests = []
 
@@ -103,7 +103,7 @@ async def _running(monkeypatch, protocols=(_PROTOCOL,), **options):
         )
         async with client:
             async with client.rle.get_rollout_client(
-                "environment", "1", _JOB, protocol_version="v3", finetune_credential=finetune, **options
+                "environment", "1", job_id, protocol_version="v3", finetune_credential=finetune, **options
             ) as session:
                 yield SimpleNamespace(
                     session=session,
@@ -120,6 +120,74 @@ async def _command(run, kind="execute"):
         if item[1]["type"] == kind:
             return item
         assert item[1]["type"] == "detach"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job_id",
+    [None, "ftjob-", "ftjob-a", "ftjob-" + "1" * 24, _JOB, "ftjob-Recipe_Run-42.a~Z", "ftjob-" + "a" * 985],
+)
+async def test_public_factory_preserves_opaque_job_id_through_execute_attach_and_detach(monkeypatch, job_id):
+    async with _running(monkeypatch, job_id=job_id) as run:
+        call = _call(run.session)
+        socket, header, body = await _command(run)
+        rollout_id = header["rollout_id"]
+        assert header.get("job_id") == body.get("job_id") == job_id
+        assert socket.subprotocol == _PROTOCOL
+        await socket.send(
+            _frame("progress", rollout_id, {"sequence": 0, "attempt_id": "attempt-1", "progress": {"phase": "running"}})
+        )
+        await socket.close()
+        replacement, recovered, cursor = await _command(run, "attach")
+        assert recovered.get("job_id") == job_id
+        assert recovered["rollout_id"] == rollout_id
+        assert cursor == {"last_sequence": 0}
+        assert replacement is not socket
+        await replacement.send(_frame("completed", rollout_id, _terminal(rollout_id)))
+        assert (await call).reward == 1
+        _, detached, _ = await _command(run, "detach")
+        assert detached["rollout_id"] == rollout_id
+        assert detached.get("job_id") == job_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "",
+        "job-abc",
+        "FTJOB-abc",
+        " ftjob-abc",
+        "ftjob-abc ",
+        "ftjob-abc\n",
+        "ftjob-a\rb",
+        "ftjob-a\tb",
+        "ftjob-a\x00b",
+        "ftjob-a/b",
+        "ftjob-a\\b",
+        "ftjob-a?b",
+        "ftjob-a#b",
+        "ftjob-a%b",
+        "ftjob-a:b",
+        "ftjob-\u00e9",
+        "ftjob-\uff11",
+        "ftjob-" + "a" * 986,
+        123,
+        True,
+        b"ftjob-abc",
+    ],
+)
+async def test_public_factory_rejects_unsafe_job_ids_before_credentials_or_connection(monkeypatch, job_id):
+    credential = _Credential()
+
+    async def connect(*args, **kwargs):
+        pytest.fail("Invalid job_id must fail before connecting.")
+
+    monkeypatch.setattr(transport, "websocket_connect", connect)
+    async with AIProjectClient("https://account.test/api/projects/project", credential, allow_preview=True) as client:
+        with pytest.raises(ValueError, match="Queued job_id must start"):
+            client.rle.get_rollout_client("environment", "1", job_id, protocol_version="v3")
+        assert credential.calls == 0
 
 
 @pytest.mark.asyncio
@@ -658,7 +726,7 @@ async def test_legacy_finetune_identity_matches_b7_and_bounds_connection_age(mon
         {"protocol_version": "v4"},
         {"protocol_version": "v3", "server_managed_token_renewal": True},
         {"finetune_credential": _FineTuneCredential(), "server_managed_token_renewal": True},
-        {"protocol_version": "v3", "job_id": "ftjob-invalid"},
+        {"protocol_version": "v3", "job_id": "ftjob-unsafe/path"},
     ],
 )
 def test_invalid_factory_options_fail_locally(monkeypatch, options):

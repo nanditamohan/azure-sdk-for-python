@@ -133,9 +133,14 @@ class _QueuedRolloutClient:
     def __init__(self, owner: AsyncRolloutClient) -> None:
         self._owner = owner
         if owner._job_id is not None and (
-            not isinstance(owner._job_id, str) or re.fullmatch(r"ftjob-[0-9a-f]{24}", owner._job_id) is None
+            not isinstance(owner._job_id, str)
+            or len(owner._job_id) > 991
+            or re.fullmatch(r"ftjob-[A-Za-z0-9._~-]*", owner._job_id) is None
         ):
-            raise ValueError("Queued job_id must have the canonical ftjob- format.")
+            raise ValueError(
+                "Queued job_id must start with 'ftjob-', contain only ASCII letters, digits, "
+                "'.', '_', '~', or '-', and be at most 991 characters."
+            )
         self._pending: dict[str, _Pending] = {}
         self._wake = asyncio.Event()
         self._driver: Optional[asyncio.Task] = None

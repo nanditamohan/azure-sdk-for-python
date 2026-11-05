@@ -546,7 +546,7 @@ Use the same asynchronous public factory and typed request/result models:
 async with project_client.rle.get_rollout_client(
     environment_name="environment",
     environment_version="1",
-    job_id="ftjob-" + "1" * 24,  # Optional; use the actual canonical training job ID.
+    job_id=training_job_id,  # Optional; preserve the actual training job ID unchanged.
     protocol_version="v3",
     finetune_credential=finetune_credential,  # Optional, caller-owned app identity.
 ) as session:
@@ -588,8 +588,11 @@ or null before any event. State snapshots never advance it. Gaps, changed worker
 attempt IDs and replay of the committed terminal sequence are valid.
 
 V3 rollout IDs must be lowercase GUIDs without separators; SDK-generated IDs
-already satisfy this. Optional job IDs must use `ftjob-` followed by 24 lowercase
-hex digits. The project endpoint and exact environment name/version fix connection
+already satisfy this. Optional job IDs are opaque strings with a case-sensitive
+`ftjob-` prefix, only ASCII letters, digits, `.`, `_`, `~`, and `-`, and at most
+991 characters total. There is no fixed suffix length or hexadecimal requirement;
+both 24- and 32-hex managed forms are accepted. IDs are never truncated, normalized,
+or replaced. The project endpoint and exact environment name/version fix connection
 scope; every command retains the original job/rollout correlation.
 
 The project credential supplies `Authorization` and `aml-user-token`.
