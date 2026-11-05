@@ -12,10 +12,12 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 from urllib.parse import quote
 
 from azure.core.exceptions import ServiceRequestError, ServiceResponseError
+from azure.core.credentials import AccessToken
+from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.rest import HttpRequest
 from websockets.exceptions import ConnectionClosed
 from websockets.typing import Subprotocol
@@ -46,6 +48,9 @@ _RECOVERY_API_VERSION = "2025-05-01"
 _RECOVERY_POLL_INTERVAL = 30
 _RECOVERY_RETRY_STATUSES = frozenset({404, 408, 429, 500, 502, 503, 504})
 
+if TYPE_CHECKING:
+    from ._queued_rollout_client_async import _QueuedRolloutClient
+
 
 class _Pending:
     def __init__(self, callback: Any, limit: int, deadline: float) -> None:
@@ -72,6 +77,10 @@ class _Connection:
 class AsyncRolloutClient:
     """An event-loop-local shared session with SDK admission and deployment handoff.
 
+    ``protocol_version="v3"`` opts into durable queued delivery and original-ID
+    attachment recovery instead of the legacy drain/HTTP recovery described below.
+    Omission preserves legacy v2/v1 negotiation.
+
     The timeout starts after concurrency admission. By default, renewal waits for pending
     calls to settle before replacing the socket. Server-managed token renewal
     disables age/token-based replacement. Unknown submitted outcomes affect only
@@ -89,11 +98,20 @@ class AsyncRolloutClient:
         job_id: Optional[str] = None,
         *,
         server_managed_token_renewal: bool = False,
+        finetune_credential: Optional[AsyncTokenCredential] = None,
+        protocol_version: Optional[str] = None,
     ) -> None:
         validate_rollout_session(environment_name, environment_version)
         if not isinstance(server_managed_token_renewal, bool):
             raise ValueError("server_managed_token_renewal must be a bool")
+        if protocol_version not in (None, "v3"):
+            raise ValueError('protocol_version must be None (legacy) or "v3"')
+        if finetune_credential is not None and server_managed_token_renewal:
+            raise ValueError("Separate fine-tuning credentials require client-managed token renewal.")
+        if protocol_version == "v3" and server_managed_token_renewal:
+            raise ValueError("Queued V3 requires client-managed token renewal.")
         self._operations = operations
+        self._finetune_credential = finetune_credential
         self._server_managed_token_renewal = server_managed_token_renewal
         self._name = environment_name
         self._version = environment_version
@@ -107,6 +125,11 @@ class AsyncRolloutClient:
         self._recovery_worker: Optional[asyncio.Task] = None
         self._closed_event = asyncio.Event()
         self._admission_stopped = asyncio.Event()
+        self._queued: Optional[_QueuedRolloutClient] = None
+        if protocol_version == "v3":
+            from ._queued_rollout_client_async import _QueuedRolloutClient
+
+            self._queued = _QueuedRolloutClient(self)
 
     @property
     def _closed(self) -> bool:
@@ -232,12 +255,17 @@ class AsyncRolloutClient:
                 code="RolloutCredentialExpired",
                 message="The credential must report a valid token with more than 60 seconds remaining.",
             )
+        finetune_token = await self._get_finetune_token()
+        token_expiry = min(token.expires_on, finetune_token.expires_on) if finetune_token else token.expires_on
+        headers = {"aml-user-token": token.token}
+        if finetune_token:
+            headers["x-ms-finetune-identity"] = finetune_token.token
         socket = await _connect_openenv_websocket(
             build_rollout_websocket_url(
                 config.endpoint, self._name, self._version, uuid.uuid4().hex, EXECUTE_ROLLOUT_API_VERSION
             ),
             token=token.token,
-            additional_headers={"aml-user-token": token.token},
+            additional_headers=headers,
             subprotocols=tuple(Subprotocol(value) for value in EXECUTE_ROLLOUT_SUBPROTOCOLS),
             timeout=max(0.0, deadline - time.monotonic()),
             max_size=DEFAULT_MAX_RESPONSE_BYTES + 4100,
@@ -246,13 +274,13 @@ class AsyncRolloutClient:
         expires = (
             float("inf")
             if self._server_managed_token_renewal
-            else time.monotonic() + min(1740.0, token.expires_on - time.time() - 60.0)
+            else time.monotonic() + min(1740.0, token_expiry - time.time() - 60.0)
         )
         connection = _Connection(socket, expires)
         if (
             self._closed or self._uncertain
             or time.monotonic() >= connection.expires
-            or token.expires_on - time.time() <= 60
+            or token_expiry - time.time() <= 60
         ):
             await self._close_connection(connection)
             self._check()
@@ -261,6 +289,18 @@ class AsyncRolloutClient:
         self._connections.add(connection)
         connection.receiver = asyncio.create_task(self._receive(connection))
         return connection
+
+    async def _get_finetune_token(self) -> Optional[AccessToken]:
+        if self._finetune_credential is None:
+            return None
+        scopes = self._operations._config.credential_scopes  # pylint: disable=protected-access
+        token = await self._finetune_credential.get_token(*scopes)
+        if not token.token or token.expires_on - time.time() <= 60:
+            raise RLERolloutError(
+                None, code="RolloutFineTuneCredentialExpired",
+                message="The fine-tuning credential must have more than 60 seconds remaining.",
+            )
+        return token
 
     async def _receive(self, connection: _Connection) -> None:
         try:
@@ -333,11 +373,15 @@ class AsyncRolloutClient:
         client = self._operations._pipeline_client  # pylint: disable=protected-access
         config = self._operations._config  # pylint: disable=protected-access
         path = f"/rl_environments/rollouts/{quote(rollout_id, safe='')}"
+        headers = {"Accept": "application/json"}
+        finetune_token = await self._get_finetune_token()
+        if finetune_token:
+            headers["x-ms-finetune-identity"] = finetune_token.token
         request = HttpRequest(
             "GET",
             path + ("/result" if result else ""),
             params={"api-version": _RECOVERY_API_VERSION},
-            headers={"Accept": "application/json"},
+            headers=headers,
         )
         request.url = client.format_url(request.url, endpoint=config.endpoint)
         pipeline_response = await client._pipeline.run(  # pylint: disable=protected-access
@@ -454,6 +498,12 @@ class AsyncRolloutClient:
     ) -> RolloutResult:
         """Execute with a default 1860-second timeout starting after SDK admission.
 
+        Explicit V3 sessions wait through durable acceptance and worker retries,
+        then return the full typed result. Disconnection resumes by attachment with
+        the last received durable cursor; it never replays execution. The timeout
+        and admission permit also cover bounded recovery and result retrieval.
+        The HTTP recovery behavior below applies to legacy sessions only.
+
         Queue waiting does not consume the timeout, but is cancellable and wakes
         on close or a session-level protocol failure. The deadline then includes renewal,
         credentials, handshake, send serialization and execution. Submitted
@@ -488,6 +538,8 @@ class AsyncRolloutClient:
             harness=harness,
         )
         self._check()
+        if self._queued is not None:
+            return await self._queued.execute(body, timeout, progress_callback, max_response_bytes)
         async with self._lease(self._admission, None):
             deadline = time.monotonic() + timeout
             frame = serialize_rollout_frame("execute", body)
@@ -593,6 +645,8 @@ class AsyncRolloutClient:
         self._closed_event.set()
         self._admission_stopped.set()
         try:
+            if self._queued is not None:
+                await self._queued.close()
             if self._recovery_worker is not None:
                 self._recovery_worker.cancel()
                 await asyncio.gather(self._recovery_worker, return_exceptions=True)
