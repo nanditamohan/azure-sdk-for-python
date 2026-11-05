@@ -15,7 +15,8 @@ and no-execute-replay semantics are unchanged, including the `.2` expiry fix.
 SHA-256: `ee4630608daeda2a539e3a2f98f2da1dc90e89a577c61dc23edaff4ac6afbf87`.
 Size: 601096 bytes. See [provenance](provenance.json) for source/build identity.
 This is a new development-only artifact, not an official release or PyPI
-publication. Prior wheels and registry/latest remain unchanged.
+publication. Only this latest development wheel is retained in the source PR;
+previously published immutable artifact URLs and registry/latest remain unchanged.
 
 ```python
 async with project_client.rle.get_rollout_client(
@@ -29,9 +30,15 @@ async with project_client.rle.get_rollout_client(
 ```
 
 Omitting `protocol_version` preserves legacy defaults. Explicit V3 never falls
-back. Pin an immutable artifact commit URL with the SHA-256 above. The public
-artifact is available through the existing distribution PR; a copy in this
-private repository still requires authorized authenticated staging.
+back. Pin the verified immutable public artifact URL with its SHA-256:
+
+```text
+https://raw.githubusercontent.com/swatisinghvi99/azure-sdk-for-python/9d53899d688ac00cf239d5c25d01c37dd44f6116/sdk/ai/azure-ai-projects/rle/wheels/2.7.0b7.dev20261104+queuedv3.3/azure_ai_projects-2.7.0b7.dev20261104+queuedv3.3-py3-none-any.whl#sha256=ee4630608daeda2a539e3a2f98f2da1dc90e89a577c61dc23edaff4ac6afbf87
+```
+
+This artifact is published on the authorized public fork only; the earlier
+upstream distribution PR was closed unmerged. A copy in this private repository
+still requires authorized authenticated staging.
 
 The source and exact installed wheel each passed 226 offline rollout tests.
 Public-factory real-WebSocket tests cover managed 32-hex, legacy 24-hex, safe
