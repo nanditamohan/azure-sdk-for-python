@@ -52,14 +52,14 @@ class GradeAction(Action):
         """The grading context for this action, with one code path for every service version.
 
         This wraps :attr:`context` when RLE sent one. When it sent none, because the service predates the
-        contract, it is a synthesized legacy context: ``version`` is ``0``, ``response_text`` is
-        :attr:`response`, and every other field is empty.
+        contract, it is a synthesized legacy context: ``version`` is ``0``, ``output_format`` is
+        ``"custom"``, ``output`` is ``{"text": response}``, and every other field is empty.
 
         :return: The read-only grading context.
         :rtype: ~azure.ai.projects.rle.environments.GradeContext
         """
         if self.context is None:
-            return GradeContext({"version": 0, "response_text": self.response})
+            return GradeContext({"version": 0, "output_format": "custom", "output": {"text": self.response}})
         return GradeContext(self.context)
 
 

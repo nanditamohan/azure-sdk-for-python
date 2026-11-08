@@ -145,7 +145,8 @@ def test_real_openenv_app_advertises_context_and_delivers_it_to_grade(client):
     context = {
         "version": 1,
         "id": "rollout-1",
-        "response_text": "42",
+        "output_format": "custom",
+        "output": {"text": "42"},
         "termination_reason": "answered",
         "task": {"answer": "42"},
     }
@@ -160,10 +161,13 @@ def test_real_openenv_app_advertises_context_and_delivers_it_to_grade(client):
     environment = next(env for env in client.app.state.created if env.state.episode_id == "context-episode")
     current, legacy = environment.graded
     assert current.grade_context.version == 1
+    assert current.grade_context.output_format == "custom"
+    assert current.grade_context.output == {"text": "42"}
     assert current.grade_context.task == {"answer": "42"}
     assert legacy.context is None
     assert legacy.grade_context.version == 0
-    assert legacy.grade_context.response_text == "42"
+    assert legacy.grade_context.output_format == "custom"
+    assert legacy.grade_context.output == {"text": "42"}
     assert _rpc(client, "openenv/session/close", {"session_id": session_id})["result"]["closed"] is True
 
 

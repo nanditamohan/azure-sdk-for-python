@@ -5,7 +5,7 @@
 """The read-only grading context RLE sends with a rollout's final answer."""
 
 from collections.abc import Iterator, Mapping
-from typing import Any, Dict, NoReturn, Tuple
+from typing import Any, Dict, List, NoReturn, Tuple, Union
 
 __all__ = ["GradeContext"]
 
@@ -16,10 +16,10 @@ def _empty_context() -> Dict[str, Any]:
         "version": 0,
         "id": "",
         "trace": {},
-        "response_text": "",
+        "output_format": "custom",
+        "output": {},
         "termination_reason": "",
         "task": {},
-        "outputs": {},
         "rewards": {},
         "env_report": {},
     }
@@ -30,10 +30,10 @@ class GradeContext(Mapping[str, Any]):
 
     RLE builds the context after the harness finishes and the model calls are captured, and sends it
     with the final answer in :attr:`~azure.ai.projects.rle.environments.GradeAction.context`. Read a
-    field by key or as an attribute: ``context.response_text`` and ``context["response_text"]`` are the
+    field by key or as an attribute: ``context.output`` and ``context["output"]`` are the
     same value. Everything below the top level is a plain ``dict``, ``list`` or JSON scalar.
 
-    Every field listed below is always present, and a field with no source is empty (``""`` or ``{}``),
+    Every field listed below is always present, and a field with no source is empty (``""``, ``{}`` or ``[]``),
     so a grader never tests for a missing key. Within a ``version`` RLE only adds fields, and a breaking
     change bumps ``version``. Keys this class does not know about stay readable by key and as
     attributes, and a consumer must tolerate them. A key that collides with a :class:`~collections.abc.Mapping`
@@ -42,7 +42,13 @@ class GradeContext(Mapping[str, Any]):
     The context cannot be changed: item and attribute assignment and deletion raise. The nested values
     are the ones RLE sent and are not copied, so treat them as read only too.
 
-    :param data: The raw ``context`` object. Fields it omits, or sends as ``null``, read as empty.
+    Older contexts with ``response_text`` but neither output field are adapted to
+    ``output_format="custom"`` and ``output={"text": response_text}``. Their original keys stay
+    readable. No legacy answer alias is synthesized for structured output.
+
+    :param data: The raw ``context`` object. Fields it omits, or sends as ``null``, read as empty,
+        except ``output_format``, which defaults to ``"custom"``. Missing or null ``output`` is
+        ``[]`` for ``"responses"`` and ``{}`` otherwise.
     :type data: Mapping[str, Any]
     """
 
@@ -56,6 +62,10 @@ class GradeContext(Mapping[str, Any]):
         for key, value in data.items():
             if value is not None or key not in values:
                 values[key] = value
+        if "output_format" not in data and "output" not in data and isinstance(data.get("response_text"), str):
+            values["output"] = {"text": data["response_text"]}
+        elif values["output_format"] == "responses" and data.get("output") is None:
+            values["output"] = []
         object.__setattr__(self, "_data", values)
 
     def __getitem__(self, key: str) -> Any:
@@ -125,15 +135,29 @@ class GradeContext(Mapping[str, Any]):
         return self._data["trace"]
 
     @property
-    def response_text(self) -> str:
-        """The final answer, always a string and ``""`` when there is none.
+    def output_format(self) -> str:
+        """The format of :attr:`output`: ``"custom"`` or ``"responses"``.
 
-        The same string as :attr:`~azure.ai.projects.rle.environments.GradeAction.response`.
+        ``"custom"`` when omitted or null. Consumers must handle unknown formats explicitly.
 
-        :return: The final answer.
+        :return: The declared output format.
         :rtype: str
         """
-        return self._data["response_text"]
+        return self._data["output_format"]
+
+    @property
+    def output(self) -> Union[Dict[str, Any], List[Any]]:
+        """The structured final output, preserved without flattening or copying.
+
+        ``"custom"`` accepts an object or array. Built-in environments conventionally use
+        ``{"text": "<final answer>"}``; other custom structures are task-specific.
+        ``"responses"`` is the native Responses output array, including message, reasoning and
+        tool-call items. Answer readers must select message content of type ``"output_text"``.
+
+        :return: The final output object or array.
+        :rtype: dict[str, any] or list[any]
+        """
+        return self._data["output"]
 
     @property
     def termination_reason(self) -> str:
@@ -153,7 +177,7 @@ class GradeContext(Mapping[str, Any]):
     def task(self) -> Dict[str, Any]:
         """The task payload exactly as the rollout request carried it.
 
-        It is the same dict the environment's ``reset()`` received.
+        For JSONL tasksets this is the resolved row, including grading metadata, not just its name.
 
         :return: The task payload.
         :rtype: dict[str, any]
@@ -161,22 +185,10 @@ class GradeContext(Mapping[str, Any]):
         return self._data["task"]
 
     @property
-    def outputs(self) -> Dict[str, Any]:
-        """JSON the remote harness returned beyond its answer, passed through untouched.
-
-        It is at most 1 MiB and self-reported by the harness, so treat it as untrusted. ``{}`` when the
-        harness returned nothing else.
-
-        :return: The harness outputs.
-        :rtype: dict[str, any]
-        """
-        return self._data["outputs"]
-
-    @property
     def rewards(self) -> Dict[str, float]:
-        """A flat map from reward name to the finite number the harness reported.
+        """A flat map from reward name to the finite number the environment reported.
 
-        ``{}`` when it reported none.
+        ``{}`` when it reported none. JSONL tasksets have no native environment reward.
 
         :return: The reported rewards.
         :rtype: dict[str, float]
@@ -185,7 +197,10 @@ class GradeContext(Mapping[str, Any]):
 
     @property
     def env_report(self) -> Dict[str, Any]:
-        """Reserved for what the environment reports about the run. ``{}`` for now.
+        """The sanitized environment report, or ``{}`` when none is available.
+
+        Oversized reports may be replaced with a truncation marker. JSONL tasksets have no native
+        environment report. This is environment-provided evidence, not captured model-call evidence.
 
         :return: The environment report.
         :rtype: dict[str, any]

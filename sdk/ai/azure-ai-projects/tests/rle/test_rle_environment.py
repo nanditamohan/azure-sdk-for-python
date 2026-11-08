@@ -6,6 +6,8 @@
 import copy
 import pickle
 from collections.abc import Mapping
+from pathlib import Path
+from textwrap import dedent
 from typing import Any, Dict, Optional
 
 import pytest
@@ -37,10 +39,10 @@ def _context() -> Dict[str, Any]:
             "final_metrics": {"total_steps": 1},
             "extra": {},
         },
-        "response_text": "42",
+        "output_format": "custom",
+        "output": {"text": "42", "citations": ["a"]},
         "termination_reason": "answered",
         "task": {"question": "6 * 7", "answer": "42"},
-        "outputs": {"citations": ["a"]},
         "rewards": {"reward": 1.0},
         "env_report": {},
     }
@@ -181,14 +183,75 @@ def test_grade_context_wraps_a_real_context() -> None:
     assert isinstance(context, GradeContext)
     assert context.version == 1
     assert context.id == "rollout-1"
-    assert context.response_text == "42"
+    assert context.output_format == "custom"
+    assert context.output == {"text": "42", "citations": ["a"]}
     assert context.termination_reason == "answered"
     assert context.task == {"question": "6 * 7", "answer": "42"}
-    assert context.outputs == {"citations": ["a"]}
     assert context.rewards == {"reward": 1.0}
     assert context.env_report == {}
     assert context.trace["schema_version"] == "ATIF-v1.8"
     assert dict(context) == _context()
+
+
+@pytest.mark.parametrize(
+    ("output_format", "output"),
+    [
+        ("custom", {"text": "42", "citations": ["a"]}),
+        ("custom", [{"answer": 42}]),
+        (
+            "responses",
+            [
+                {"type": "reasoning", "summary": []},
+                {"type": "function_call", "name": "lookup", "arguments": "{}"},
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "42"}],
+                },
+            ],
+        ),
+    ],
+)
+def test_grade_context_preserves_structured_output(
+    output_format: str, output: Any
+) -> None:
+    action = GradeAction(
+        response="not the structured answer",
+        context={**_context(), "output_format": output_format, "output": output},
+    )
+
+    context = action.grade_context
+
+    assert context.output_format == output_format
+    assert action.context is not None
+    assert context.output is action.context["output"]
+    assert context.output == output
+    with pytest.raises(AttributeError):
+        _ = context.response_text
+    with pytest.raises(KeyError):
+        _ = context["outputs"]
+
+
+def test_grade_context_adapts_an_earlier_text_context() -> None:
+    context = GradeAction(
+        response="not the context answer",
+        context={
+            "version": 1,
+            "response_text": "42",
+            "outputs": {"citations": ["a"]},
+        },
+    ).grade_context
+
+    assert context.version == 1
+    assert context.output_format == "custom"
+    assert context.output == {"text": "42"}
+    assert context["response_text"] == "42"
+    assert context["outputs"] == {"citations": ["a"]}
+
+
+def test_earlier_text_does_not_override_explicit_structured_output() -> None:
+    context = GradeContext({**_context(), "response_text": "obsolete"})
+
+    assert context.output == _context()["output"]
 
 
 def test_grade_context_is_synthesized_for_a_legacy_action() -> None:
@@ -198,15 +261,16 @@ def test_grade_context_is_synthesized_for_a_legacy_action() -> None:
 
     assert isinstance(context, GradeContext)
     assert context.version == 0
-    assert context.response_text == "42"
+    assert context.output_format == "custom"
+    assert context.output == {"text": "42"}
     assert dict(context) == {
         "version": 0,
         "id": "",
         "trace": {},
-        "response_text": "42",
+        "output_format": "custom",
+        "output": {"text": "42"},
         "termination_reason": "",
         "task": {},
-        "outputs": {},
         "rewards": {},
         "env_report": {},
     }
@@ -217,6 +281,9 @@ def test_legacy_grade_contexts_do_not_share_nested_containers() -> None:
     first.task["leaked"] = True
 
     assert GradeAction(response="42").grade_context.task == {}
+    assert isinstance(first.output, dict)
+    first.output["text"] = "changed"
+    assert GradeAction(response="42").grade_context.output == {"text": "42"}
 
 
 def test_grade_context_follows_the_current_context() -> None:
@@ -239,8 +306,10 @@ class _ContextEnvironment(_TestEnvironment):
     ) -> Observation:
         context = action.grade_context
         answered = context.termination_reason in ("", "answered")
+        output = context.output
+        assert isinstance(output, dict)
         return Observation(
-            reward=1.0 if answered and context.response_text == "42" else 0.0,
+            reward=1.0 if answered and output["text"] == "42" else 0.0,
             done=True,
             metadata={"version": context.version},
         )
@@ -273,7 +342,8 @@ def test_grade_context_is_exported_from_the_environments_package() -> None:
 def test_grade_context_reads_by_key_and_by_attribute() -> None:
     context = GradeContext(_context())
 
-    assert context["response_text"] == context.response_text == "42"
+    assert context["output"] is context.output
+    assert context["output_format"] == context.output_format == "custom"
     assert context["task"] is context.task
     assert context["version"] == context.version == 1
     assert context["termination_reason"] == context.termination_reason
@@ -358,18 +428,68 @@ def test_grade_context_nested_values_stay_plain_json() -> None:
 
 
 def test_grade_context_fills_omitted_and_null_fields_with_empty_values() -> None:
-    context = GradeContext({"version": 1, "task": None, "response_text": "42"})
+    context = GradeContext(
+        {"version": 1, "task": None, "output_format": None, "output": None}
+    )
 
     assert context.version == 1
     assert context.id == ""
     assert context.trace == {}
-    assert context.response_text == "42"
+    assert context.output_format == "custom"
+    assert context.output == {}
     assert context.termination_reason == ""
     assert context.task == {}
-    assert context.outputs == {}
     assert context.rewards == {}
     assert context.env_report == {}
     assert len(context) == 9
+
+
+@pytest.mark.parametrize("fields", [{}, {"output": None}])
+def test_grade_context_empty_responses_output_stays_an_array(
+    fields: Dict[str, Any]
+) -> None:
+    context = GradeContext({"output_format": "responses", **fields})
+
+    assert context.output == []
+    assert context.output is not GradeContext({"output_format": "responses"}).output
+
+
+@pytest.mark.parametrize(
+    ("output_format", "output", "reward", "error"),
+    [
+        ("custom", {"text": "shipped"}, 1.0, None),
+        ("custom", {"text": "pending"}, 0.0, None),
+        ("custom", {"text": 42}, None, "string text"),
+        ("custom", [], None, "custom text"),
+        ("responses", [], None, "custom text"),
+    ],
+)
+def test_readme_grader_uses_the_real_context(
+    output_format: str, output: Any, reward: Optional[float], error: Optional[str]
+) -> None:
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+    example = (
+        readme.split("This example expects the built-in custom text convention:", 1)[1]
+        .split("```python\n", 1)[1]
+        .split("```", 1)[0]
+    )
+    namespace = {"GradeAction": GradeAction, "Observation": Observation, "Any": Any}
+    exec(dedent(example), namespace)
+    action = GradeAction(
+        response="not the structured answer",
+        context={
+            **_context(),
+            "output_format": output_format,
+            "output": output,
+            "trace": {"steps": [{"tool_calls": [{"function_name": "lookup_order"}]}]},
+        },
+    )
+
+    if error:
+        with pytest.raises(ValueError, match=error):
+            namespace["grade"](None, action)
+    else:
+        assert namespace["grade"](None, action).reward == reward
 
 
 def test_grade_context_keeps_null_unknown_keys() -> None:

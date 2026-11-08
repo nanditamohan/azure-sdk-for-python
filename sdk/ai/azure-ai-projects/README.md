@@ -260,11 +260,21 @@ are already registered on a `FastMCP` server, pass it to
 
 `GradeAction` also carries an optional `context`: everything RLE knows about the
 finished rollout. It holds an ATIF v1.8 `trace` of the captured model calls, the
-final `response_text`, why the run stopped (`termination_reason`), the `task`
-that `reset()` received, any `outputs` and `rewards` a remote harness reported,
-the rollout `id`, and the contract `version`. Read it through
+declared `output_format` and structured final `output`, why the run stopped
+(`termination_reason`), the original `task`, native environment `rewards` and
+`env_report`, the rollout `id`, and the contract `version`. Read it through
 `action.grade_context`, a read-only mapping that also supports attribute access,
-so `context.response_text` and `context["response_text"]` are the same value:
+so `context.output` and `context["output"]` are the same value:
+
+`output_format="custom"` accepts an object or array. Built-in environments use
+`{"text": "<final answer>"}`; other structures need a task-specific reader.
+`output_format="responses"` preserves the native Responses output array. Read
+message content of type `output_text`, not reasoning or tool-call items.
+There are no canonical top-level `response_text` or `outputs` fields.
+For JSONL tasksets, `task` is the resolved row with its grading metadata;
+`rewards` and `env_report` are empty, so the grader must derive correctness.
+
+This example expects the built-in custom text convention:
 
 ```python
     def grade(
@@ -279,20 +289,30 @@ so `context.response_text` and `context["response_text"]` are the same value:
             for step in context.trace.get("steps", [])
             for call in step.get("tool_calls", [])
         )
-        is_correct = context.response_text == "shipped" and looked_up
+        if context.output_format != "custom" or not isinstance(context.output, dict):
+            raise ValueError("This grader requires custom text output")
+        answer = context.output.get("text")
+        if not isinstance(answer, str):
+            raise ValueError("Custom output must contain a string text field")
+        is_correct = answer == "shipped" and looked_up
         return Observation(reward=float(is_correct), done=True)
 ```
 
-Every field is always present, and a field with no source is empty (`""` or
-`{}`). Within a `version` RLE only adds fields, so ignore keys you do not know,
+Every field is always present. Missing or null fields read as empty (`""`,
+`{}` or `0` for `version`), except `output_format`, which defaults to `"custom"`.
+Missing or null `output` is `[]` for `"responses"` and `{}` otherwise.
+Within a `version` RLE only adds fields, so ignore keys you do not know,
 and treat a `termination_reason` you do not recognize as `"unknown"`.
 
 RLE sends `context` only when the environment's `GET /schema` action schema
 declares it, which `GradeAction` does. Environments built on an older SDK or on
 a custom action class keep receiving only `response`, as before. The same holds
 for a service that predates the context: `grade_context` then returns a
-`version` `0` context whose `response_text` is `response` and whose other fields
-are empty, so one `grade()` implementation covers both.
+`version` `0` context with `output_format="custom"` and
+`output={"text": response}`, so one `grade()` implementation covers both.
+Older contexts containing `response_text` but neither output field are also
+adapted to custom text output. Original unknown keys remain readable, but the
+SDK does not synthesize `response_text` or `outputs` aliases for new contexts.
 
 Use the SDK's `create_app` factory (same arguments and `FastAPI` return value
 as OpenEnv 0.6) to install request-scoped session routing automatically. Forward
