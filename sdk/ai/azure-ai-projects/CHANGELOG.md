@@ -2,6 +2,10 @@
 
 ## 2.7.0b7.dev20261104+queuedv3.3 (Unreleased)
 
+### Features Added
+
+* Added optional per-rollout `max_completion_tokens`, `temperature`, `top_p`, `top_k`, and `seed` defaults to `rle.SamplingOptions`. Explicit model requests override these defaults; service/provider limits still apply, and training capture requires neutral top-p/top-k.
+
 ### Bugs Fixed
 
 * Match the queued service's bounded opaque job-ID contract instead of requiring a 24-hex suffix. Accept managed 32-hex and other safe `ftjob-` identifiers unchanged, retaining ASCII character and 991-character limits through execution and attachment recovery.
