@@ -388,9 +388,11 @@ class RolloutResult(_Model):
 
     :ivar rollout_id: The identifier supplied on the request, returned unchanged.
     :vartype rollout_id: str
-    :ivar rollout: Capture Proxy graph for the episode, with credentials and routing metadata
+    :ivar rollout_graph: Capture Proxy graph for the episode, with credentials and routing metadata
      removed. Its ``sequences`` carry the ``input_ids``, ``loss_mask`` and ``logprobs`` of every
      model turn.
+    :vartype rollout_graph: dict[str, any]
+    :ivar rollout: Legacy Capture Proxy graph field, used before ``rollout_graph``.
     :vartype rollout: dict[str, any]
     :ivar reward: Reward for the rollout. For Gym/OpenEnv this is the undiscounted sum of every
      per-step reward in ``episode``, each of which is also reported individually.
@@ -405,8 +407,10 @@ class RolloutResult(_Model):
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
     """The identifier supplied on the request, returned unchanged."""
-    rollout: Optional[Any] = rest_field(visibility=_VISIBILITY)
+    rollout_graph: Optional[Any] = rest_field(visibility=_VISIBILITY)
     """Capture Proxy graph for the episode."""
+    rollout: Optional[Any] = rest_field(visibility=_VISIBILITY)
+    """Legacy Capture Proxy graph for the episode."""
     reward: Optional[float] = rest_field(visibility=_VISIBILITY)
     """Reward for the rollout."""
     success: Optional[bool] = rest_field(visibility=_VISIBILITY)
@@ -421,6 +425,7 @@ class RolloutResult(_Model):
         self,
         *,
         rollout_id: str,
+        rollout_graph: Optional[Any] = None,
         rollout: Optional[Any] = None,
         reward: Optional[float] = None,
         success: Optional[bool] = None,
@@ -446,7 +451,7 @@ class RolloutResult(_Model):
         An eval-level capture returns no sequences, so this is empty rather than absent -- callers
         building training data should check it before assuming the rollout is trainable.
         """
-        rollout = self.rollout
+        rollout = self.rollout_graph if self.rollout_graph is not None else self.rollout
         if not isinstance(rollout, Mapping):
             return []
         sequences = rollout.get("sequences")

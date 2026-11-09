@@ -538,7 +538,7 @@ applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
 Deployment-drain handoff is in **2.7.0b5 (Unreleased)** and requires publishing that
 development wheel before consumers pin it.
 
-### Durable queued sessions (explicit V3 opt-in)
+### Durable queued sessions (explicit V3/V4 opt-in)
 
 Use the same asynchronous public factory and typed request/result models:
 
@@ -547,7 +547,7 @@ async with project_client.rle.get_rollout_client(
     environment_name="environment",
     environment_version="1",
     job_id=training_job_id,  # Optional; preserve the actual training job ID unchanged.
-    protocol_version="v3",
+    protocol_version="v4",
     finetune_credential=finetune_credential,  # Optional, caller-owned app identity.
 ) as session:
     result = await session.execute_rollout(
@@ -559,13 +559,14 @@ async with project_client.rle.get_rollout_client(
 ```
 
 Omitting `protocol_version` preserves the legacy v2/v1 negotiation and lifecycle
-described above. Explicit `"v3"` offers **only** `rle.execute-rollout.v3` and verifies
+described above. Explicit `"v3"` or `"v4"` offers **only** its corresponding
+`rle.execute-rollout.v3` or `rle.execute-rollout.v4` subprotocol and verifies
 the selected protocol. Disabled delivery, failed negotiation or disabled queued
 acceptance is an explicit error, never a fallback to legacy execution. Synchronous
 and asynchronous `rle.execute_rollout()` retain their HTTP defaults; shared
 WebSocket sessions remain asynchronous only.
 
-V3 `accepted` means durable admission, **not completion**. The SDK keeps the call
+V3/V4 `accepted` means durable admission, **not completion**. The SDK keeps the call
 pending through queued/running/finalizing state and worker retries, dispatches
 durable progress, and returns a full `RolloutResult` only on committed completion.
 Capture graphs, token arrays, rewards, and structured results retain the same
@@ -575,6 +576,19 @@ and synchronous. Error messages are sanitized; inspect `RLERolloutError.code`
 for known service codes such as `QueuedAcceptanceDisabled`, `HistoryUnavailable`,
 or `queued_execution_failed`. Unknown service codes become `QueuedRolloutFailed`.
 History/dependency errors are not fabricated successes or automatic re-execution.
+
+V4 uses the same durable execution as V3, but every `completed` event contains
+only the durable event identity and `result_available: true`, never a graph or
+result reference. The SDK automatically calls
+`GET /rl_environments/rollouts/{rolloutId}/result` at the original project endpoint
+and returns the full `RolloutResult`. This applies to small and large results alike.
+Retrieval runs outside the socket receiver, so it does not block other rollouts.
+The SDK does not save local files; callers can keep using `result.as_dict()` and
+their existing persistence or training code. The original timeout and
+`max_response_bytes` still bound the complete download. A retrieval failure is
+reported without re-executing the rollout, even if the socket has since closed.
+The current service graph is available as `result.rollout_graph`; legacy
+`result.rollout` remains supported, and `result.sequences` reads either shape.
 
 One serialized command driver and an independent bounded receiver multiplex up to
 32 admitted logical calls. The original post-admission deadline and admission
@@ -587,7 +601,7 @@ The attach cursor is the last durable sequence actually received, including zero
 or null before any event. State snapshots never advance it. Gaps, changed worker
 attempt IDs and replay of the committed terminal sequence are valid.
 
-V3 rollout IDs must be lowercase GUIDs without separators; SDK-generated IDs
+V3/V4 rollout IDs must be lowercase GUIDs without separators; SDK-generated IDs
 already satisfy this. Optional job IDs are opaque strings with a case-sensitive
 `ftjob-` prefix, only ASCII letters, digits, `.`, `_`, `~`, and `-`, and at most
 991 characters total. There is no fixed suffix length or hexadecimal requirement;
@@ -601,8 +615,8 @@ handshake and result retrieval, preserving the consumed 2.7.0b7 identity contrac
 Both use the project's configured scopes and require real expiry more than
 60 seconds away. Connection lifetime is bounded by the earlier expiry and
 1740 seconds. Both credentials remain caller-owned. Separate fine-tuning
-credentials and V3 cannot use `server_managed_token_renewal=True`.
-V3 wire debug logging is disabled to avoid exposing credentials or training data.
+credentials and V3/V4 cannot use `server_managed_token_renewal=True`.
+V3/V4 wire debug logging is disabled to avoid exposing credentials or training data.
 
 Large-result references must be canonical, correlated relative RLE result routes,
 not absolute URLs, Blob URLs or SAS URLs. The SDK retrieves the complete result

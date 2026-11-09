@@ -54,7 +54,8 @@ class _QueuedSocket(_Socket):
 
 
 def _queued_session(monkeypatch, sockets, **options):
-    return _session(monkeypatch, sockets, job_id=_JOB, protocol_version="v3", **options)
+    protocol_version = options.pop("protocol_version", "v3")
+    return _session(monkeypatch, sockets, job_id=_JOB, protocol_version=protocol_version, **options)
 
 
 def _call(session, **options):
@@ -75,7 +76,7 @@ def _terminal(rollout_id, sequence=1, **options):
 
 
 @asynccontextmanager
-async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, **options):
+async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, protocol_version="v3", **options):
     commands = asyncio.Queue()
     requests = []
 
@@ -103,7 +104,7 @@ async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, **options):
         )
         async with client:
             async with client.rle.get_rollout_client(
-                "environment", "1", job_id, protocol_version="v3", finetune_credential=finetune, **options
+                "environment", "1", job_id, protocol_version=protocol_version, finetune_credential=finetune, **options
             ) as session:
                 yield SimpleNamespace(
                     session=session,
@@ -723,8 +724,9 @@ async def test_legacy_finetune_identity_matches_b7_and_bounds_connection_age(mon
     "options",
     [
         {"protocol_version": "v2"},
-        {"protocol_version": "v4"},
+        {"protocol_version": "v5"},
         {"protocol_version": "v3", "server_managed_token_renewal": True},
+        {"protocol_version": "v4", "server_managed_token_renewal": True},
         {"finetune_credential": _FineTuneCredential(), "server_managed_token_renewal": True},
         {"protocol_version": "v3", "job_id": "ftjob-unsafe/path"},
     ],

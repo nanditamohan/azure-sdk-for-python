@@ -77,8 +77,9 @@ class _Connection:
 class AsyncRolloutClient:
     """An event-loop-local shared session with SDK admission and deployment handoff.
 
-    ``protocol_version="v3"`` opts into durable queued delivery and original-ID
+    ``protocol_version="v3"`` or ``"v4"`` opts into durable queued delivery and original-ID
     attachment recovery instead of the legacy drain/HTTP recovery described below.
+    V4 always downloads the full result over HTTP after a completion notification.
     Omission preserves legacy v2/v1 negotiation.
 
     The timeout starts after concurrency admission. By default, renewal waits for pending
@@ -104,12 +105,12 @@ class AsyncRolloutClient:
         validate_rollout_session(environment_name, environment_version)
         if not isinstance(server_managed_token_renewal, bool):
             raise ValueError("server_managed_token_renewal must be a bool")
-        if protocol_version not in (None, "v3"):
-            raise ValueError('protocol_version must be None (legacy) or "v3"')
+        if protocol_version not in (None, "v3", "v4"):
+            raise ValueError('protocol_version must be None (legacy), "v3", or "v4"')
         if finetune_credential is not None and server_managed_token_renewal:
             raise ValueError("Separate fine-tuning credentials require client-managed token renewal.")
-        if protocol_version == "v3" and server_managed_token_renewal:
-            raise ValueError("Queued V3 requires client-managed token renewal.")
+        if protocol_version in ("v3", "v4") and server_managed_token_renewal:
+            raise ValueError("Queued V3/V4 requires client-managed token renewal.")
         self._operations = operations
         self._finetune_credential = finetune_credential
         self._server_managed_token_renewal = server_managed_token_renewal
@@ -126,10 +127,10 @@ class AsyncRolloutClient:
         self._closed_event = asyncio.Event()
         self._admission_stopped = asyncio.Event()
         self._queued: Optional[_QueuedRolloutClient] = None
-        if protocol_version == "v3":
+        if protocol_version in ("v3", "v4"):
             from ._queued_rollout_client_async import _QueuedRolloutClient
 
-            self._queued = _QueuedRolloutClient(self)
+            self._queued = _QueuedRolloutClient(self, protocol_version)
 
     @property
     def _closed(self) -> bool:
