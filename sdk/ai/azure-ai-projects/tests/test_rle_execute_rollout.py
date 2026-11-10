@@ -127,6 +127,45 @@ def _policy(**overrides: Any) -> LoomPolicy:
     return LoomPolicy(**values)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("mapping", [False, True])
+@pytest.mark.parametrize(
+    "model,renderer",
+    [
+        ("Qwen/Qwen3-32B", "mai_harmony_internal"),
+        ("unknown/model", None),
+    ],
+)
+async def test_invalid_model_renderer_fails_before_credentials_or_http(
+    rollout_server,
+    asynchronous,
+    mapping,
+    model,
+    renderer,
+):
+    recorder, endpoint = rollout_server
+    policy = _policy(model_name=model)
+    options = {
+        "task": {},
+        "policy": policy.as_dict() if mapping else policy,
+        "sampling": SamplingOptions(renderer_name=renderer) if renderer else None,
+    }
+    credential = _AsyncFakeCredential() if asynchronous else _FakeCredential()
+    if asynchronous:
+        async with AsyncAIProjectClient(
+            endpoint, credential, allow_preview=True
+        ) as client:
+            with pytest.raises(ValueError):
+                await client.rle.execute_rollout("env", "1", **options)
+    else:
+        with AIProjectClient(endpoint, credential, allow_preview=True) as client:
+            with pytest.raises(ValueError):
+                client.rle.execute_rollout("env", "1", **options)
+    assert not hasattr(credential, "scopes")
+    assert recorder.requests == []
+
+
 # --------------------------------------------------------------------------------------
 # Request shape
 # --------------------------------------------------------------------------------------

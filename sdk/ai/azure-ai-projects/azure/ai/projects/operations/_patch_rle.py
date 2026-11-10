@@ -75,6 +75,7 @@ from ._patch_rle_rollout import (
     RLERolloutError,
     build_rollout_body,
     build_rollout_request,
+    validate_rollout_model_renderer,
     deserialize_rollout_response,
 )
 from ._operations import (
@@ -1623,6 +1624,7 @@ class RLEOperations:
             harness=harness,
             rollout_id=rollout_id,
         )
+        validate_rollout_model_renderer(body)
         request = build_rollout_request(
             environment_name=environment_name,
             environment_version=environment_version,

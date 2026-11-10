@@ -38,6 +38,7 @@ from ...operations._patch_rle_rollout import (
     rollout_progress,
     serialize_rollout_frame,
     validate_rollout_options,
+    validate_rollout_model_renderer,
     validate_rollout_session,
 )
 from ...rle._rollout_models import HarnessConfiguration, RolloutPolicy, RolloutResult, SamplingOptions
@@ -544,6 +545,7 @@ class AsyncRolloutClient:
             harness=harness,
         )
         self._check()
+        await asyncio.to_thread(validate_rollout_model_renderer, body)
         if self._queued is not None:
             return await self._queued.execute(body, timeout, progress_callback, max_response_bytes)
         async with self._lease(self._admission, None):

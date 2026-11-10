@@ -16,9 +16,13 @@ from __future__ import annotations
 import json
 import math
 import struct
+import threading
+import time
 import uuid
+import warnings
 from typing import Any, Mapping, Optional
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.request import urlopen
 
 from azure.core.exceptions import HttpResponseError
 from azure.core.rest import HttpRequest
@@ -48,6 +52,114 @@ DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 FORWARDED_TOKEN_HEADER = "aml-user-token"
 
 _ROLLOUT_PATH_TEMPLATE = "/rl_environments/{name}/versions/{version}:executeRollout"
+_MODEL_CATALOG_URL = (
+    "https://raw.githubusercontent.com/Azure/azure-dev/"
+    "rle-releases/cli/azd/extensions/azure.ai.rle/models.json"
+)
+_MODEL_CATALOG_MAX_BYTES = 1024 * 1024
+_MODEL_CATALOG_LOCK = threading.Lock()
+_model_catalog: Optional[tuple[float, dict[str, tuple[str, ...]]]] = None
+_model_catalog_error: Optional[tuple[float, str]] = None
+
+
+def _load_model_catalog() -> dict[str, tuple[str, ...]]:
+    global _model_catalog, _model_catalog_error  # pylint: disable=global-statement
+    with _MODEL_CATALOG_LOCK:
+        if _model_catalog is not None and time.monotonic() - _model_catalog[0] < 300:
+            return _model_catalog[1]
+        if (
+            _model_catalog_error is not None
+            and time.monotonic() - _model_catalog_error[0] < 30
+        ):
+            raise ValueError(_model_catalog_error[1])
+        try:
+            models = _download_model_catalog()
+        except (OSError, ValueError) as error:
+            _model_catalog_error = (time.monotonic(), str(error))
+            raise
+        _model_catalog_error = None
+        _model_catalog = (time.monotonic(), models)
+        return models
+
+
+def _download_model_catalog() -> dict[str, tuple[str, ...]]:
+    with urlopen(
+        _MODEL_CATALOG_URL, timeout=10
+    ) as response:  # nosec B310: fixed HTTPS catalog URL
+        data = response.read(_MODEL_CATALOG_MAX_BYTES + 1)
+    if len(data) > _MODEL_CATALOG_MAX_BYTES:
+        raise ValueError("RLE model catalog exceeds the 1 MiB response limit")
+    entries = json.loads(data)
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("RLE model catalog must contain a nonempty array")
+    models: dict[str, tuple[str, ...]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("RLE model catalog contains an invalid entry")
+        model, renderers = entry.get("model"), entry.get("renderers")
+        if (
+            not isinstance(model, str)
+            or not model.strip()
+            or model != model.strip()
+            or model in models
+            or not isinstance(renderers, list)
+            or not renderers
+            or any(
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+                for value in renderers
+            )
+            or len(set(renderers)) != len(renderers)
+        ):
+            raise ValueError(
+                "RLE model catalog contains invalid or duplicate model/renderer names"
+            )
+        models[model] = tuple(renderers)
+    return models
+
+
+def validate_rollout_model_renderer(body: RolloutRequest) -> None:
+    """Validate Loom configuration before credentials, transport admission or execution."""
+    policy = body.policy
+    renderer = body.sampling.renderer_name if body.sampling is not None else None
+    policy_type = policy.type.strip() if isinstance(policy.type, str) else None
+    if policy_type == "foundry":
+        if renderer is not None:
+            raise ValueError(
+                "sampling.renderer_name is not accepted with a Foundry policy"
+            )
+        return
+    if policy_type != "loom":
+        raise ValueError("policy.type must be loom or foundry")
+    model = policy.as_dict().get("model_name")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("policy.model_name is required for a Loom policy")
+    if renderer is not None and (not isinstance(renderer, str) or not renderer.strip()):
+        raise ValueError("sampling.renderer_name must be nonempty when provided")
+    if len(model.strip()) > 256 or (
+        renderer is not None and len(renderer.strip()) > 256
+    ):
+        raise ValueError("Model and renderer names must be at most 256 characters")
+    try:
+        models = _load_model_catalog()
+    except (OSError, ValueError) as error:
+        warnings.warn(
+            f"Skipped RLE model/renderer validation: {error}. The service will validate the request.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    renderers = models.get(model.strip())
+    if renderers is None:
+        raise ValueError(
+            f"Model '{model.strip()}' is not a supported Loom base model. Supported models: {', '.join(models)}."
+        )
+    if renderer is not None and renderer.strip() not in renderers:
+        raise ValueError(
+            f"Renderer '{renderer.strip()}' is not valid for model '{model.strip()}'. "
+            f"Supported renderers: {', '.join(renderers)}."
+        )
 
 
 class RLERolloutError(HttpResponseError):
