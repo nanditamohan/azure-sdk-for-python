@@ -158,18 +158,27 @@ def test_posts_to_the_version_pinned_action_url(rollout_server):
 async def test_http_harness_override_on_both_clients(rollout_server, asynchronous, harness):
     recorder, endpoint = rollout_server
     recorder.body = {"rollout_id": "fixed"}
+    sampling_values = {
+        "max_completion_tokens": 32768, "temperature": 0,
+        "top_p": 1, "top_k": -1, "seed": 0,
+    }
+    sampling = SamplingOptions(sampling_values)
     if asynchronous:
         async with AsyncAIProjectClient(
             endpoint=endpoint, credential=_AsyncFakeCredential(), allow_preview=True
         ) as client:
             await client.rle.execute_rollout(
                 "environment", "1", task={}, policy=_policy(), harness=harness,
-                rollout_id="fixed", enforce_https=False,
+                rollout_id="fixed", enforce_https=False, sampling=sampling,
             )
     else:
         with _client(endpoint) as client:
-            _rollout(client, "environment", "1", task={}, policy=_policy(), harness=harness, rollout_id="fixed")
+            _rollout(
+                client, "environment", "1", task={}, policy=_policy(), harness=harness,
+                rollout_id="fixed", sampling=sampling,
+            )
     body = recorder.requests[0]["body"]
+    assert body["sampling"] == sampling_values
     if harness is None:
         assert "harness" not in body
     else:
@@ -201,7 +210,10 @@ def test_sends_task_policy_and_sampling_verbatim(rollout_server):
             "1.0.6",
             task=task,
             policy=_policy(sequence_id=7),
-            sampling=SamplingOptions(renderer_name="qwen3"),
+            sampling=SamplingOptions(
+                renderer_name="qwen3", max_completion_tokens=32768,
+                temperature=0, top_p=1, top_k=-1, seed=0,
+            ),
             rollout_id="fixed-id",
         )
 
@@ -216,7 +228,10 @@ def test_sends_task_policy_and_sampling_verbatim(rollout_server):
         "checkpoint_id": "checkpoint-1",
         "sequence_id": 7,
     }
-    assert body["sampling"] == {"renderer_name": "qwen3"}
+    assert body["sampling"] == {
+        "renderer_name": "qwen3", "max_completion_tokens": 32768,
+        "temperature": 0, "top_p": 1, "top_k": -1, "seed": 0,
+    }
 
 
 def test_escapes_environment_name_and_version(rollout_server):

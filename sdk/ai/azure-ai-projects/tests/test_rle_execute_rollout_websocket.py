@@ -32,7 +32,7 @@ from azure.ai.projects.operations._patch_rle_rollout import (
     deserialize_rollout_frame,
     serialize_rollout_frame,
 )
-from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy
+from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy, SamplingOptions
 
 
 class _Credential:
@@ -183,6 +183,7 @@ def test_rollout_operations_share_one_typed_harness_contract(operation):
 
 
 def _session(monkeypatch, sockets, limit=16, job_id="ftjob-test", **options):
+    options.setdefault("protocol_version", None)
     credential = _Credential()
     config = SimpleNamespace(
         endpoint="https://account.test/api/projects/project",
@@ -293,6 +294,26 @@ async def test_harness_override_is_preserved_in_execute_frame(monkeypatch, harne
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("as_mapping", [False, True])
+async def test_sampling_defaults_are_preserved_in_execute_frame(monkeypatch, as_mapping):
+    values = {
+        "max_completion_tokens": 32768, "temperature": 0,
+        "top_p": 1, "top_k": -1, "seed": 0,
+    }
+    sampling = SamplingOptions(values) if as_mapping else SamplingOptions(**values)
+    socket = _Socket()
+    session, _, _ = _session(monkeypatch, [socket])
+    async with session:
+        task = asyncio.create_task(session.execute_rollout(
+            task={"row": 1}, policy=_policy(), sampling=sampling,
+        ))
+        header, payload = await _sent(socket)
+        assert json.loads(payload)["sampling"] == values
+        _complete(socket, header["rollout_id"])
+        await task
+
+
+@pytest.mark.asyncio
 async def test_public_factory_is_lazy_and_legacy_http_defaults():
     credential = _Credential()
     client = AsyncAIProjectClient(
@@ -339,9 +360,9 @@ async def test_optional_job_id_is_preserved_across_connections(
         endpoint="https://account.test/api/projects/project", credential=_Credential(), allow_preview=True
     )
     session = (
-        client.rle.get_rollout_client("environment", "1", job_id=identifier)
+        client.rle.get_rollout_client("environment", "1", job_id=identifier, protocol_version=None)
         if use_factory
-        else AsyncRolloutClient(client.rle, "environment", "1", job_id=identifier)
+        else AsyncRolloutClient(client.rle, "environment", "1", job_id=identifier, protocol_version=None)
     )
     try:
         async with session:
@@ -376,9 +397,9 @@ async def test_sdk_managed_concurrency_admits_32_rollouts_and_queues_the_next(mo
         endpoint="https://account.test/api/projects/project", credential=_Credential(), allow_preview=True
     )
     session = (
-        client.rle.get_rollout_client("environment", "1")
+        client.rle.get_rollout_client("environment", "1", protocol_version=None)
         if use_factory
-        else AsyncRolloutClient(client.rle, "environment", "1")
+        else AsyncRolloutClient(client.rle, "environment", "1", protocol_version=None)
     )
     try:
         async with session:
@@ -1664,7 +1685,7 @@ def _loopback_client(monkeypatch, server, limit=3, job_id="ftjob-test"):
         credential=credential,
         allow_preview=True,
     )
-    return client, client.rle.get_rollout_client("environment", "1", job_id), credential
+    return client, client.rle.get_rollout_client("environment", "1", job_id, protocol_version=None), credential
 
 
 @pytest.mark.asyncio

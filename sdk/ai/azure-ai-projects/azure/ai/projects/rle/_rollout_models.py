@@ -168,13 +168,48 @@ class SamplingOptions(_Model):
     :ivar renderer_name: Optional Capture Proxy renderer profile. The service picks a compatible
      default when omitted.
     :vartype renderer_name: str
+    :ivar max_completion_tokens: Default maximum output tokens per model call, subject to service
+     ceilings and remaining model context. Explicit model-request values take precedence.
+    :vartype max_completion_tokens: int
+    :ivar temperature: Default temperature between 0 and 2, inclusive.
+    :vartype temperature: float
+    :ivar top_p: Default nucleus probability in (0, 1]. Training capture requires 1.
+    :vartype top_p: float
+    :ivar top_k: Default candidate count; -1 or 0 disables filtering. Training requires disabled filtering.
+    :vartype top_k: int
+    :ivar seed: Default nonnegative 32-bit sampling seed. Reproducibility depends on the provider.
+    :vartype seed: int
     """
 
     renderer_name: Optional[str] = rest_field(visibility=_VISIBILITY)
     """Optional Capture Proxy renderer profile."""
 
+    max_completion_tokens: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Default maximum output tokens per request; service and context limits still apply."""
+
+    temperature: Optional[float] = rest_field(visibility=_VISIBILITY)
+    """Default sampling temperature."""
+
+    top_p: Optional[float] = rest_field(visibility=_VISIBILITY)
+    """Default nucleus sampling probability."""
+
+    top_k: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Default candidate count, or -1/0 to disable filtering."""
+
+    seed: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Default sampling seed; provider support is required."""
+
     @overload
-    def __init__(self, *, renderer_name: Optional[str] = None) -> None: ...
+    def __init__(
+        self,
+        *,
+        renderer_name: Optional[str] = None,
+        max_completion_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> None: ...
 
     @overload
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -449,9 +484,11 @@ class RolloutResult(_Model):
 
     :ivar rollout_id: The identifier supplied on the request, returned unchanged.
     :vartype rollout_id: str
-    :ivar rollout: Capture Proxy graph for the episode, with credentials and routing metadata
+    :ivar rollout_graph: Capture Proxy graph for the episode, with credentials and routing metadata
      removed. Its ``sequences`` carry the ``input_ids``, ``loss_mask`` and ``logprobs`` of every
      model turn.
+    :vartype rollout_graph: dict[str, any]
+    :ivar rollout: Legacy Capture Proxy graph field, used before ``rollout_graph``.
     :vartype rollout: dict[str, any]
     :ivar reward: Reward for the rollout. For Gym/OpenEnv this is the undiscounted sum of every
      per-step reward in ``episode``, each of which is also reported individually.
@@ -468,8 +505,10 @@ class RolloutResult(_Model):
 
     rollout_id: str = rest_field(visibility=_VISIBILITY)
     """The identifier supplied on the request, returned unchanged."""
-    rollout: Optional[Any] = rest_field(visibility=_VISIBILITY)
+    rollout_graph: Optional[Any] = rest_field(visibility=_VISIBILITY)
     """Capture Proxy graph for the episode."""
+    rollout: Optional[Any] = rest_field(visibility=_VISIBILITY)
+    """Legacy Capture Proxy graph for the episode."""
     reward: Optional[float] = rest_field(visibility=_VISIBILITY)
     """Reward for the rollout."""
     success: Optional[bool] = rest_field(visibility=_VISIBILITY)
@@ -486,6 +525,7 @@ class RolloutResult(_Model):
         self,
         *,
         rollout_id: str,
+        rollout_graph: Optional[Any] = None,
         rollout: Optional[Any] = None,
         reward: Optional[float] = None,
         success: Optional[bool] = None,
@@ -512,7 +552,7 @@ class RolloutResult(_Model):
         An eval-level capture returns no sequences, so this is empty rather than absent -- callers
         building training data should check it before assuming the rollout is trainable.
         """
-        rollout = self.rollout
+        rollout = self.rollout_graph if self.rollout_graph is not None else self.rollout
         if not isinstance(rollout, Mapping):
             return []
         sequences = rollout.get("sequences")

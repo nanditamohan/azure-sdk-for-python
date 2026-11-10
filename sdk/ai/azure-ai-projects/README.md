@@ -430,6 +430,30 @@ To report an issue with the client library, or request additional features, plea
 
 ## Shared RLE rollout sessions (private preview)
 
+### Model sampling defaults
+
+Pass `SamplingOptions` to HTTP or shared-session `execute_rollout` calls:
+
+```python
+from azure.ai.projects.rle import SamplingOptions
+
+sampling = SamplingOptions(
+    max_completion_tokens=32768,
+    temperature=0.7,
+    top_p=1.0,
+    top_k=-1,
+    seed=42,
+)
+# Add sampling=sampling to your existing execute_rollout call.
+```
+
+All fields are optional defaults for each model call through Capture Proxy.
+Explicit model-request values override them; operator ceilings and remaining
+context still apply. A requested maximum is not a guaranteed response length.
+Training capture requires neutral `top_p=1` and `top_k=-1` or `0`. Evaluation
+provider support varies, and a seed does not guarantee reproducibility.
+The SDK does not read local `rle.toml`; that configuration is CLI-only.
+
 ### Legacy sessions (default)
 
 Construct the client with `allow_preview=True`. For training, open one session for the
@@ -459,7 +483,7 @@ async with project_client.rle.get_rollout_client(
                 policy=policy,
                 harness=HarnessConfiguration(type="gym"),
                 timeout=1860,
-                max_response_bytes=8 * 1024 * 1024,
+                max_response_bytes=32 * 1024 * 1024,
             )
             for task in tasks
         )
@@ -470,6 +494,9 @@ Shared sessions are asynchronous only. Entry is lazy: the first execution obtain
 credentials and opens the socket. Use `await session.close()` without a context manager,
 and close the session before the project client. Existing sync and async
 `client.rle.execute_rollout(...)` retain their HTTP default and do not create a session.
+Shared sessions default to V4 and require a V4-capable backend; there is no automatic
+fallback. Select `protocol_version="v3"` for V3 or explicitly pass
+`protocol_version=None` for legacy v2/v1.
 
 `job_id` optionally associates rollouts with a job. Omit it when running outside
 a job context; no job identifier is generated. Each execution still has its own
@@ -491,6 +518,10 @@ correlates out-of-order results by rollout ID. `progress_callback`, if supplied,
 a mapping containing `rollout_id`; it must be a lightweight synchronous callable.
 Callback exceptions and malformed progress are surfaced to the associated caller.
 
+The following connection renewal, deployment-drain and HTTP status-recovery details
+describe explicit legacy sessions (`protocol_version=None`). Default V4 sessions use
+the durable attachment and result retrieval described in the queued-session section below.
+
 For long jobs, the SDK stops new submissions at the age/token renewal boundary, waits
 for current pending calls to settle, then closes the old socket before opening its replacement.
 Deployment draining is different: existing work stays on the draining socket while new
@@ -506,7 +537,8 @@ The handshake supplies both `Authorization` and `aml-user-token`; both are redac
 the SDK WebSocket logger.
 
 For deployments with server-side delegated token renewal, pass
-`server_managed_token_renewal=True` to `get_rollout_client`. This disables
+`server_managed_token_renewal=True` and `protocol_version=None` to
+`get_rollout_client`. This disables
 age/token-based replacement of a healthy socket; tokens are still acquired and
 validated for every initial or replacement handshake. No user token is sent in
 individual execute frames. RLE must renew the connection caller's token before
@@ -594,7 +626,7 @@ applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
 Deployment-drain handoff is in **2.7.0b5 (Unreleased)** and requires publishing that
 development wheel before consumers pin it.
 
-### Durable queued sessions (explicit V3 opt-in)
+### Durable queued sessions (V4 by default)
 
 Use the same asynchronous public factory and typed request/result models:
 
@@ -603,7 +635,6 @@ async with project_client.rle.get_rollout_client(
     environment_name="environment",
     environment_version="1",
     job_id=training_job_id,  # Optional; preserve the actual training job ID unchanged.
-    protocol_version="v3",
     finetune_credential=finetune_credential,  # Optional, caller-owned app identity.
 ) as session:
     result = await session.execute_rollout(
@@ -614,14 +645,15 @@ async with project_client.rle.get_rollout_client(
     )
 ```
 
-Omitting `protocol_version` preserves the legacy v2/v1 negotiation and lifecycle
-described above. Explicit `"v3"` offers **only** `rle.execute-rollout.v3` and verifies
+Omitting `protocol_version` selects V4. Explicit `"v3"` or `"v4"` offers **only** its corresponding
+`rle.execute-rollout.v3` or `rle.execute-rollout.v4` subprotocol and verifies
 the selected protocol. Disabled delivery, failed negotiation or disabled queued
 acceptance is an explicit error, never a fallback to legacy execution. Synchronous
 and asynchronous `rle.execute_rollout()` retain their HTTP defaults; shared
-WebSocket sessions remain asynchronous only.
+WebSocket sessions remain asynchronous only. To retain legacy v2/v1 negotiation
+and lifecycle, explicitly pass `protocol_version=None`.
 
-V3 `accepted` means durable admission, **not completion**. The SDK keeps the call
+V3/V4 `accepted` means durable admission, **not completion**. The SDK keeps the call
 pending through queued/running/finalizing state and worker retries, dispatches
 durable progress, and returns a full `RolloutResult` only on committed completion.
 Capture graphs, token arrays, rewards, and structured results retain the same
@@ -643,6 +675,29 @@ such as traceback are discarded. Treat the reason as customer content: do not
 log it to shared telemetry. Nested cause retryability describes the dependency;
 it does not authorize replaying a terminal rollout.
 
+V4 uses the same durable execution as V3, but every `completed` event contains
+only the durable event identity and `result_available: true`, never a graph or
+result reference. The SDK automatically calls
+`GET /rl_environments/rollouts/{rolloutId}/result` at the original project endpoint
+and returns the full `RolloutResult`. This applies to small and large results alike.
+Retrieval runs outside the socket receiver, so it does not block other rollouts.
+The SDK does not save local files; callers can keep using `result.as_dict()` and
+their existing persistence or training code. The original timeout and
+`max_response_bytes` still bound the complete download. V4 defaults to **32 MiB
+(33,554,432 bytes)**; increase the per-call budget with
+`execute_rollout(..., max_response_bytes=64 * 1024 * 1024)` for 64 MiB, or supply a
+smaller positive limit. Omitting the parameter or passing `None` selects the
+protocol default. V3 and legacy defaults remain 8 MiB, and WebSocket payloads
+remain capped at 8 MiB regardless of the V4 download budget.
+Exceeding the download budget raises `RLERolloutError` with code
+`RolloutResultTooLarge`; the message includes the configured limit, bytes observed,
+and an example `max_response_bytes` override. Only result retrieval fails, not the
+completed rollout. A retrieval failure is reported without re-executing the rollout,
+even if the socket has since closed. The full response is buffered and parsed in
+memory, so choose a budget appropriate for the calling process.
+The current service graph is available as `result.rollout_graph`; legacy
+`result.rollout` remains supported, and `result.sequences` reads either shape.
+
 One serialized command driver and an independent bounded receiver multiplex up to
 32 admitted logical calls. The original post-admission deadline and admission
 permit cover connection, execution, attachment recovery and complete result fetch.
@@ -654,7 +709,7 @@ The attach cursor is the last durable sequence actually received, including zero
 or null before any event. State snapshots never advance it. Gaps, changed worker
 attempt IDs and replay of the committed terminal sequence are valid.
 
-V3 rollout IDs must be lowercase GUIDs without separators; SDK-generated IDs
+V3/V4 rollout IDs must be lowercase GUIDs without separators; SDK-generated IDs
 already satisfy this. Optional job IDs are opaque strings with a case-sensitive
 `ftjob-` prefix, only ASCII letters, digits, `.`, `_`, `~`, and `-`, and at most
 991 characters total. There is no fixed suffix length or hexadecimal requirement;
@@ -668,8 +723,8 @@ handshake and result retrieval, preserving the consumed 2.7.0b7 identity contrac
 Both use the project's configured scopes and require real expiry more than
 60 seconds away. Connection lifetime is bounded by the earlier expiry and
 1740 seconds. Both credentials remain caller-owned. Separate fine-tuning
-credentials and V3 cannot use `server_managed_token_renewal=True`.
-V3 wire debug logging is disabled to avoid exposing credentials or training data.
+credentials and V3/V4 cannot use `server_managed_token_renewal=True`.
+V3/V4 wire debug logging is disabled to avoid exposing credentials or training data.
 
 Large-result references must be canonical, correlated relative RLE result routes,
 not absolute URLs, Blob URLs or SAS URLs. The SDK retrieves the complete result

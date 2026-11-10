@@ -1,6 +1,24 @@
 # Release History
 
+## 2.7.0b7.dev20261104+queuedv3.4 (Unreleased)
+
+### Features Added
+
+* Added optional per-rollout `max_completion_tokens`, `temperature`, `top_p`, `top_k`, and `seed` defaults to `rle.SamplingOptions`. Explicit model requests override these defaults; service/provider limits still apply, and training capture requires neutral top-p/top-k.
+
+### Breaking Changes
+
+* Asynchronous `get_rollout_client()` and direct `AsyncRolloutClient` construction now default to V4 queued delivery. A V4-capable backend is required; failed negotiation never falls back to legacy execution. Explicit `protocol_version="v3"` selects V3, and explicit `protocol_version=None` retains legacy v2/v1 behavior, including legacy server-managed token renewal. Synchronous/asynchronous HTTP operation defaults are unchanged.
+
+### Bugs Fixed
+
+* Accept queued V3 result references whose Foundry workspace names contain encoded `@` characters (`%40`). Completed rollouts can retrieve their full results without `InvalidRolloutResultReference`, retaining original-project authentication, rollout-ID checks and rejection of other encoded characters.
+
 ## 2.7.0b7.dev20261104+queuedv3.3 (Unreleased)
+
+### Features Added
+
+* Added explicit `protocol_version="v4"` to asynchronous rollout sessions. Every committed completion triggers an authenticated result GET, returning the same full `RolloutResult` without blocking the WebSocket receiver. V4 HTTP downloads default to a 32 MiB budget and honor the caller's `max_response_bytes` independently of the WebSocket frame limit. `RolloutResultTooLarge` errors report the limit, bytes observed, and how to increase the parameter. V3 and legacy limits remain unchanged.
 
 ### Bugs Fixed
 
