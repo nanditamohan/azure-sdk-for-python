@@ -374,6 +374,149 @@ async def test_failures_are_explicit_sanitized_and_never_resubmitted(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reconnect", [False, True])
+@pytest.mark.parametrize("sequence", [None, 3])
+async def test_structured_grader_failure_preserves_caller_reason_through_attachment(
+    monkeypatch, reconnect, sequence, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    async with _running(monkeypatch) as run:
+        call = _call(run.session)
+        socket, header, _ = await _command(run)
+        rollout_id = header["rollout_id"]
+        if reconnect:
+            await socket.close()
+            socket, attached, _ = await _command(run, "attach")
+            assert attached["rollout_id"] == rollout_id
+        cause = {
+            "code": "GraderFailed",
+            "dependency": "grader",
+            "operation": "grading",
+            "retryable": False,
+            "error_type": "KeyError",
+        }
+        message = "The grader raised an exception: KeyError: missing score"
+        await socket.send(
+            _frame(
+                "failed",
+                rollout_id,
+                {
+                    "code": "queued_execution_failed",
+                    "message": message,
+                    "retryable": False,
+                    "sequence": sequence,
+                    "attempt_id": "attempt-2",
+                    "cause": cause,
+                },
+            )
+        )
+
+        with pytest.raises(RLERolloutError) as caught:
+            await call
+
+        error = caught.value
+        assert error.code == "queued_execution_failed"
+        assert error.service_message == message
+        assert error.cause == cause
+        assert error.rollout_id == rollout_id
+        assert error.attempt_id == "attempt-2"
+        assert error.sequence == sequence
+        assert message in str(error)
+        assert message not in caplog.text
+        _, detached, _ = await _command(run, "detach")
+        assert detached["rollout_id"] == rollout_id
+        assert run.commands.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cause",
+    [
+        {"code": "FutureGraderFailure", "dependency": "grader", "operation": "grading", "retryable": True},
+        {
+            "code": "GraderFailed",
+            "dependency": "grader",
+            "operation": "startup",
+            "retryable": False,
+            "traceback": "not a public cause field",
+            "error_type": None,
+        },
+    ],
+)
+async def test_failure_cause_is_forward_compatible_but_does_not_expose_extra_fields(monkeypatch, cause):
+    socket = _QueuedSocket()
+    session, _, _ = _queued_session(monkeypatch, [socket])
+    async with session:
+        call = _call(session)
+        header, _ = await _sent(socket)
+        socket.incoming.put_nowait(
+            _frame(
+                "failed",
+                header["rollout_id"],
+                {
+                    "code": "queued_execution_failed",
+                    "message": "Safe service reason.",
+                    "retryable": False,
+                    "sequence": 1,
+                    "attempt_id": "attempt",
+                    "cause": cause,
+                },
+            )
+        )
+        with pytest.raises(RLERolloutError) as caught:
+            await call
+        assert caught.value.cause["code"] == cause["code"]
+        assert "traceback" not in caught.value.cause
+        assert "not a public" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cause,message",
+    [
+        ({}, "reason"),
+        ({"code": "GraderFailed", "dependency": "grader", "operation": "grading", "retryable": 1}, "reason"),
+        ({"code": "unsafe\ncode", "dependency": "grader", "operation": "grading", "retryable": False}, "reason"),
+        (
+            {
+                "code": "GraderFailed",
+                "dependency": "grader",
+                "operation": "grading",
+                "retryable": False,
+                "error_type": ["KeyError"],
+            },
+            "reason",
+        ),
+        ({"code": "GraderFailed", "dependency": "grader", "operation": "grading", "retryable": False}, "x" * 4097),
+    ],
+)
+async def test_malformed_structured_failure_is_a_protocol_error(monkeypatch, cause, message):
+    socket = _QueuedSocket()
+    session, _, _ = _queued_session(monkeypatch, [socket])
+    async with session:
+        call = _call(session)
+        header, _ = await _sent(socket)
+        socket.incoming.put_nowait(
+            _frame(
+                "failed",
+                header["rollout_id"],
+                {
+                    "code": "queued_execution_failed",
+                    "message": message,
+                    "retryable": False,
+                    "sequence": 1,
+                    "attempt_id": "attempt",
+                    "cause": cause,
+                },
+            )
+        )
+        with pytest.raises(RLERolloutError) as caught:
+            await call
+        assert caught.value.code == "InvalidRolloutFrame"
+        assert caught.value.cause is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "malformed",
     [
