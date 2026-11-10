@@ -443,7 +443,8 @@ def _result_pipeline(session, reply):
 
 
 @pytest.mark.asyncio
-async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_typed_result(monkeypatch):
+@pytest.mark.parametrize("workspace", ["workspace", "account-name%40project-name%40AML"])
+async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_typed_result(monkeypatch, workspace):
     socket = _QueuedSocket()
     finetune = _FineTuneCredential()
     session, user, _ = _queued_session(monkeypatch, [socket], finetune_credential=finetune)
@@ -459,7 +460,7 @@ async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_
                 {
                     "sequence": 5,
                     "attempt_id": "attempt",
-                    "result_url": _RESULT_PREFIX + rollout_id + "/result",
+                    "result_url": _RESULT_PREFIX.replace("/workspace/", f"/{workspace}/") + rollout_id + "/result",
                 },
             )
         )
@@ -488,6 +489,18 @@ async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_
         _RESULT_PREFIX + "{id}/result#fragment",
         _RESULT_PREFIX + "{other}/result",
         _RESULT_PREFIX.replace("/group/", "/%2f/") + "{id}/result",
+        *[
+            _RESULT_PREFIX.replace("/workspace/", f"/{workspace}/") + "{id}/result"
+            for workspace in (
+                "account%2Fproject",
+                "account%2fproject",
+                "account%5Cproject",
+                "account%2540project",
+                "account%4",
+                "account%GGproject",
+                "..",
+            )
+        ],
     ],
 )
 async def test_invalid_result_references_never_forward_credentials(monkeypatch, route):

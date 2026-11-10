@@ -46,7 +46,7 @@ _PROTOCOL = "rle.execute-rollout.v3"
 _RESULT_ROUTE = re.compile(
     r"/rle/v1\.0/subscriptions/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/resourceGroups/[A-Za-z0-9_.()-]+"
-    r"/providers/Microsoft\.MachineLearningServices/workspaces/[A-Za-z0-9_-]+"
+    r"/providers/Microsoft\.MachineLearningServices/workspaces/(?:[A-Za-z0-9_-]|%40)+"
     r"/rl_environments/rollouts/(?P<rollout>[0-9a-f]{32})/result"
 )
 _SERVICE_CODES = frozenset(
