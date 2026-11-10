@@ -63,6 +63,7 @@ from ...operations._patch_rle_rollout import (
     build_rollout_body,
     build_rollout_request,
     deserialize_rollout_response,
+    validate_rollout_model_renderer,
 )
 from ...operations._patch_rle import (
     _DEFAULT_INSTANCE_ACQUIRE_TIMEOUT_S,
@@ -1411,6 +1412,7 @@ class RLEOperations:
             harness=harness,
             rollout_id=rollout_id,
         )
+        await asyncio.to_thread(validate_rollout_model_renderer, body)
         request = build_rollout_request(
             environment_name=environment_name,
             environment_version=environment_version,

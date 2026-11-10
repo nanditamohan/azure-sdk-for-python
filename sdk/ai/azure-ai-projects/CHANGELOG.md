@@ -12,6 +12,7 @@
 
 ### Bugs Fixed
 
+* Validate Loom model/renderer combinations against the CLI's published catalog before HTTP, WebSocket, or queued rollout submission. Catalog downloads are bounded and cached for five minutes; unavailable catalogs produce an explicit warning and leave authoritative validation to the service. Foundry deployments are not checked against the Loom catalog.
 * Accept queued V3 result references whose Foundry workspace names contain encoded `@` characters (`%40`). Completed rollouts can retrieve their full results without `InvalidRolloutResultReference`, retaining original-project authentication, rollout-ID checks and rejection of other encoded characters.
 
 ## 2.7.0b7.dev20261104+queuedv3.3 (Unreleased)

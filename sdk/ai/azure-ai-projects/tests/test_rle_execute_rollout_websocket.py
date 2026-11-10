@@ -208,13 +208,34 @@ async def _sent(socket):
     return await asyncio.wait_for(socket.sent.get(), timeout=1)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", [None, "v3", "v4"])
+async def test_invalid_renderer_fails_before_credentials_connection_or_queued_admission(
+    monkeypatch, protocol
+):
+    session, credential, calls = _session(monkeypatch, [], protocol_version=protocol)
+    async with session:
+        with pytest.raises(ValueError, match="not valid for model"):
+            await session.execute_rollout(
+                task={},
+                policy=_policy(),
+                sampling=SamplingOptions(renderer_name="mai_harmony_internal"),
+            )
+    assert credential.calls == 0
+    assert calls == []
+
+
 def test_request_limit_includes_prefix_header_and_payload():
     limit = 4 * 1024 * 1024
     body = build_rollout_body(task="", policy=_policy(), rollout_id="boundary")
     overhead = len(serialize_rollout_frame("execute", body))
-    body = build_rollout_body(task="x" * (limit - overhead), policy=_policy(), rollout_id="boundary")
+    body = build_rollout_body(
+        task="x" * (limit - overhead), policy=_policy(), rollout_id="boundary"
+    )
     assert len(serialize_rollout_frame("execute", body)) == limit
-    body = build_rollout_body(task="x" * (limit - overhead + 1), policy=_policy(), rollout_id="boundary")
+    body = build_rollout_body(
+        task="x" * (limit - overhead + 1), policy=_policy(), rollout_id="boundary"
+    )
     with pytest.raises(ValueError, match="4 MiB total"):
         serialize_rollout_frame("execute", body)
 

@@ -47,6 +47,21 @@ def pytest_collection_modifyitems(items):
             )
 
 
+@pytest.fixture(autouse=True)
+def offline_rollout_model_catalog(request, monkeypatch):
+    if request.module.__name__.startswith("test_rle_execute_rollout"):
+        from azure.ai.projects.operations import _patch_rle_rollout
+
+        monkeypatch.setattr(
+            _patch_rle_rollout,
+            "_load_model_catalog",
+            lambda: {
+                "Qwen/Qwen3-32B": ("qwen3_ext", "qwen3", "qwen3_disable_thinking"),
+                "model": ("qwen3",),
+            },
+        )
+
+
 class SanitizedValues:
     SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000000"
     RESOURCE_GROUP_NAME = "sanitized-resource-group-name"
