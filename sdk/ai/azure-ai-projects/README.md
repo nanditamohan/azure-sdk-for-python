@@ -585,8 +585,18 @@ and returns the full `RolloutResult`. This applies to small and large results al
 Retrieval runs outside the socket receiver, so it does not block other rollouts.
 The SDK does not save local files; callers can keep using `result.as_dict()` and
 their existing persistence or training code. The original timeout and
-`max_response_bytes` still bound the complete download. A retrieval failure is
-reported without re-executing the rollout, even if the socket has since closed.
+`max_response_bytes` still bound the complete download. V4 defaults to **32 MiB
+(33,554,432 bytes)**; increase the per-call budget with
+`execute_rollout(..., max_response_bytes=64 * 1024 * 1024)` for 64 MiB, or supply a
+smaller positive limit. Omitting the parameter or passing `None` selects the
+protocol default. V3 and legacy defaults remain 8 MiB, and WebSocket payloads
+remain capped at 8 MiB regardless of the V4 download budget.
+Exceeding the download budget raises `RLERolloutError` with code
+`RolloutResultTooLarge`; the message includes the configured limit, bytes observed,
+and an example `max_response_bytes` override. Only result retrieval fails, not the
+completed rollout. A retrieval failure is reported without re-executing the rollout,
+even if the socket has since closed. The full response is buffered and parsed in
+memory, so choose a budget appropriate for the calling process.
 The current service graph is available as `result.rollout_graph`; legacy
 `result.rollout` remains supported, and `result.sequences` reads either shape.
 

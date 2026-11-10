@@ -554,6 +554,32 @@ async def test_result_lookup_status_size_and_shape_failures(monkeypatch, status,
 
 
 @pytest.mark.asyncio
+async def test_v3_result_download_default_remains_eight_mib(monkeypatch):
+    socket = _QueuedSocket()
+    session, _, _ = _queued_session(monkeypatch, [socket])
+    requests, responses = _result_pipeline(session, lambda _: (200, b"x" * (DEFAULT_MAX_RESPONSE_BYTES + 1)))
+    async with session:
+        call = _call(session)
+        header, _ = await _sent(socket)
+        rollout_id = header["rollout_id"]
+        socket.incoming.put_nowait(
+            _frame(
+                "completed",
+                rollout_id,
+                {
+                    "sequence": 1,
+                    "attempt_id": "attempt",
+                    "result_url": _RESULT_PREFIX + rollout_id + "/result",
+                },
+            )
+        )
+        with pytest.raises(RLERolloutError) as caught:
+            await call
+        assert caught.value.code == "RolloutResultTooLarge"
+        assert len(requests) == 1 and responses[0].closed
+
+
+@pytest.mark.asyncio
 async def test_receive_continues_while_serialized_sender_is_blocked(monkeypatch):
     socket = _QueuedSocket()
     session, _, _ = _queued_session(monkeypatch, [socket])

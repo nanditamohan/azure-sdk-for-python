@@ -5,6 +5,7 @@
 """V4 completion-to-GET contract tests; no live service or local result files."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -48,7 +49,7 @@ async def test_real_v4_completion_fetches_full_typed_result_after_socket_closes(
             return 200, body
 
         requests, responses = _result_pipeline(run.session, result)
-        call = _call(run.session, max_response_bytes=2 * DEFAULT_MAX_RESPONSE_BYTES)
+        call = _call(run.session)
         socket, header, _ = await _command(run)
         rollout_id = header["rollout_id"]
         assert socket.subprotocol == _PROTOCOL
@@ -72,6 +73,52 @@ async def test_real_v4_completion_fetches_full_typed_result_after_socket_closes(
         assert run.user.calls == run.finetune.calls == 2
         assert requests[0].headers["aml-user-token"] == "token-2"
         assert requests[0].headers["x-ms-finetune-identity"] == "finetune-token-2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "limit,size,succeeds",
+    [
+        (None, 32 * 1024 * 1024, True),
+        (None, 32 * 1024 * 1024 + 1, False),
+        (40 * 1024 * 1024, 32 * 1024 * 1024 + 1, True),
+        (1024, 1024, True),
+        (1024, 1025, False),
+    ],
+)
+async def test_v4_result_download_default_and_override_boundaries(monkeypatch, limit, size, succeeds):
+    socket = _V4Socket()
+    session, _, _ = _queued_session(monkeypatch, [socket], protocol_version="v4")
+
+    def result(request):
+        body = _result(request.url.split("/")[-2])
+        body["padding"] = ""
+        body["padding"] = "x" * (size - len(json.dumps(body).encode()))
+        return 200, body
+
+    requests, responses = _result_pipeline(session, result)
+    async with session:
+        call = _call(session, **({} if limit is None else {"max_response_bytes": limit}))
+        header, _ = await _sent(socket)
+        rollout_id = header["rollout_id"]
+        socket.incoming.put_nowait(_frame("completed", rollout_id, _completion()))
+        if succeeds:
+            assert (await call).rollout_id == rollout_id
+        else:
+            with pytest.raises(RLERolloutError) as caught:
+                await call
+            budget = 32 * 1024 * 1024 if limit is None else limit
+            assert caught.value.code == "RolloutResultTooLarge"
+            assert caught.value.rollout_id == rollout_id
+            assert f"max_response_bytes={budget}" in str(caught.value)
+            assert f"at least {size} bytes" in str(caught.value)
+            assert f"max_response_bytes={2 * budget}" in str(caught.value)
+            assert "execute_rollout" in str(caught.value)
+            assert "rollout completed" in str(caught.value)
+        assert len(requests) == 1 and responses[0].closed
+        while not socket.sent.empty():
+            command, _ = socket.sent.get_nowait()
+            assert command["type"] == "detach"
 
 
 @pytest.mark.asyncio

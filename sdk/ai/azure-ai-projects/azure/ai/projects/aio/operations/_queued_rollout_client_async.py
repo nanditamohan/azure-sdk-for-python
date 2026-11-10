@@ -495,7 +495,18 @@ class _QueuedRolloutClient:
                 data = bytearray()
                 async for chunk in response.iter_bytes():
                     if len(data) + len(chunk) > limit:
-                        raise _error("RolloutResultTooLarge", rollout_id)
+                        received = len(data) + len(chunk)
+                        raise RLERolloutError(
+                            None,
+                            code="RolloutResultTooLarge",
+                            rollout_id=rollout_id,
+                            message=(
+                                f"The rollout completed, but its result download exceeded max_response_bytes={limit} "
+                                f"bytes (received at least {received} bytes). Increase max_response_bytes in "
+                                f"execute_rollout(...), for example max_response_bytes={max(2 * limit, received)}. "
+                                "Execution was not replayed."
+                            ),
+                        )
                     data.extend(chunk)
                 return _object(bytes(data))
             finally:

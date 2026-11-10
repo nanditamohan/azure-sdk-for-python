@@ -4,7 +4,7 @@
 
 ### Features Added
 
-* Added explicit `protocol_version="v4"` to asynchronous rollout sessions. Every committed completion triggers an authenticated result GET, returning the same full `RolloutResult` without blocking the WebSocket receiver. V4 HTTP downloads honor the caller's `max_response_bytes` independently of the WebSocket frame limit; V3 and legacy behavior remain unchanged.
+* Added explicit `protocol_version="v4"` to asynchronous rollout sessions. Every committed completion triggers an authenticated result GET, returning the same full `RolloutResult` without blocking the WebSocket receiver. V4 HTTP downloads default to a 32 MiB budget and honor the caller's `max_response_bytes` independently of the WebSocket frame limit. `RolloutResultTooLarge` errors report the limit, bytes observed, and how to increase the parameter. V3 and legacy limits remain unchanged.
 
 ### Bugs Fixed
 

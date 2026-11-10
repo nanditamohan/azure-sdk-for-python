@@ -117,6 +117,7 @@ class AsyncRolloutClient:
         self._name = environment_name
         self._version = environment_version
         self._job_id = job_id
+        self._default_max_response_bytes = 32 * 1024 * 1024 if protocol_version == "v4" else DEFAULT_MAX_RESPONSE_BYTES
         self._admission = asyncio.Semaphore(_MAX_CONCURRENT_ROLLOUTS)
         self._send_lock = asyncio.Lock()
         self._active: Optional[_Connection] = None
@@ -495,7 +496,7 @@ class AsyncRolloutClient:
         rollout_id: Optional[str] = None,
         timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
-        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        max_response_bytes: Optional[int] = None,
     ) -> RolloutResult:
         """Execute with a default 1860-second timeout starting after SDK admission.
 
@@ -527,12 +528,16 @@ class AsyncRolloutClient:
         :paramtype timeout: float
         :keyword progress_callback: Lightweight synchronous callback receiving correlated progress.
         :paramtype progress_callback: callable or None
-        :keyword max_response_bytes: Positive response safety budget; protocol payloads remain capped at 8 MiB.
-        :paramtype max_response_bytes: int
+        :keyword max_response_bytes: Positive response safety budget in bytes. Defaults to 32 MiB for V4
+            HTTP result downloads and 8 MiB otherwise. None selects the protocol default. Larger V4
+            HTTP downloads can be enabled by increasing this value; WebSocket payloads remain capped at 8 MiB.
+        :paramtype max_response_bytes: int or None
         :return: The completed rollout.
         :rtype: ~azure.ai.projects.rle.RolloutResult
         :raises ~azure.ai.projects.operations.RLERolloutUnknownOutcomeError: Submitted outcome cannot be determined.
         """
+        if max_response_bytes is None:
+            max_response_bytes = self._default_max_response_bytes
         validate_rollout_options(timeout, max_response_bytes)
         body = build_rollout_body(
             task=task, policy=policy, sampling=sampling, rollout_id=rollout_id, job_id=self._job_id,
