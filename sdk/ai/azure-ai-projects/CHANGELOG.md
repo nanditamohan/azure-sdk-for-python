@@ -8,6 +8,10 @@
 
 ## 2.7.0b7.dev20261104+queuedv3.3 (Unreleased)
 
+### Features Added
+
+* Added explicit `protocol_version="v4"` to asynchronous rollout sessions. Every committed completion triggers an authenticated result GET, returning the same full `RolloutResult` without blocking the WebSocket receiver. V4 HTTP downloads default to a 32 MiB budget and honor the caller's `max_response_bytes` independently of the WebSocket frame limit. `RolloutResultTooLarge` errors report the limit, bytes observed, and how to increase the parameter. V3 and legacy limits remain unchanged.
+
 ### Bugs Fixed
 
 * Match the queued service's bounded opaque job-ID contract instead of requiring a 24-hex suffix. Accept managed 32-hex and other safe `ftjob-` identifiers unchanged, retaining ASCII character and 991-character limits through execution and attachment recovery.

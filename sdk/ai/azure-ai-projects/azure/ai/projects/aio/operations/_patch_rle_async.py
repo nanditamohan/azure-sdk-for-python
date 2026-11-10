@@ -1281,8 +1281,9 @@ class RLEOperations:
         """Create a lazy asynchronous shared Execute Rollout client.
 
         The following drain/HTTP recovery behavior describes the legacy default.
-        Set ``protocol_version="v3"`` for durable acceptance and original-ID
+        Set ``protocol_version="v3"`` or ``"v4"`` for durable acceptance and original-ID
         WebSocket attachment recovery, without execution replay or legacy fallback.
+        V4 receives a completion notification, then retrieves the full result over HTTP.
 
         The SDK manages admission for up to 32 concurrent rollouts per client,
         with no public concurrency override. The session owns one active submission socket. Draining
@@ -1312,9 +1313,11 @@ class RLEOperations:
             remaining. Cannot be combined with server-managed token renewal.
             The caller owns and closes this credential.
         :paramtype finetune_credential: ~azure.core.credentials_async.AsyncTokenCredential or None
-        :keyword protocol_version: Set to ``"v3"`` for durable queued execution, without
+        :keyword protocol_version: Set to ``"v3"`` or ``"v4"`` for durable queued execution, without
             legacy fallback. Omit for the unchanged v2/v1 preference. Accepted work survives
             disconnection; recovery attaches the original ID within its original deadline.
+            V4 downloads every completed result using GET and returns the same full
+            ``RolloutResult``; no separate retrieval or local file handling is needed.
         :paramtype protocol_version: str or None
         :return: A lazy asynchronous context manager with ``execute_rollout`` and async ``close``.
         :rtype: ~azure.ai.projects.aio.operations._rollout_client_async.AsyncRolloutClient
