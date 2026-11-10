@@ -1,5 +1,11 @@
 # Release History
 
+## 2.7.0b7.dev20261104+queuedv3.4 (Unreleased)
+
+### Bugs Fixed
+
+* Accept queued V3 result references whose Foundry workspace names contain encoded `@` characters (`%40`). Completed rollouts can retrieve their full results without `InvalidRolloutResultReference`, retaining original-project authentication, rollout-ID checks and rejection of other encoded characters.
+
 ## 2.7.0b7.dev20261104+queuedv3.3 (Unreleased)
 
 ### Bugs Fixed
