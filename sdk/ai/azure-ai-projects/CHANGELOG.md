@@ -2,6 +2,10 @@
 
 ## 2.7.0b7.dev20261104+queuedv3.4 (Unreleased)
 
+### Breaking Changes
+
+* Asynchronous `get_rollout_client()` and direct `AsyncRolloutClient` construction now default to V4 queued delivery. A V4-capable backend is required; failed negotiation never falls back to legacy execution. Explicit `protocol_version="v3"` selects V3, and explicit `protocol_version=None` retains legacy v2/v1 behavior, including legacy server-managed token renewal. Synchronous/asynchronous HTTP operation defaults are unchanged.
+
 ### Bugs Fixed
 
 * Accept queued V3 result references whose Foundry workspace names contain encoded `@` characters (`%40`). Completed rollouts can retrieve their full results without `InvalidRolloutResultReference`, retaining original-project authentication, rollout-ID checks and rejection of other encoded characters.
