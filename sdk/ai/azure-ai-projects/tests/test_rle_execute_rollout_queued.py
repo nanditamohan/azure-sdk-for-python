@@ -54,7 +54,8 @@ class _QueuedSocket(_Socket):
 
 
 def _queued_session(monkeypatch, sockets, **options):
-    return _session(monkeypatch, sockets, job_id=_JOB, protocol_version="v3", **options)
+    protocol_version = options.pop("protocol_version", "v3")
+    return _session(monkeypatch, sockets, job_id=_JOB, protocol_version=protocol_version, **options)
 
 
 def _call(session, **options):
@@ -75,7 +76,7 @@ def _terminal(rollout_id, sequence=1, **options):
 
 
 @asynccontextmanager
-async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, **options):
+async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, protocol_version="v3", **options):
     commands = asyncio.Queue()
     requests = []
 
@@ -103,7 +104,7 @@ async def _running(monkeypatch, protocols=(_PROTOCOL,), job_id=_JOB, **options):
         )
         async with client:
             async with client.rle.get_rollout_client(
-                "environment", "1", job_id, protocol_version="v3", finetune_credential=finetune, **options
+                "environment", "1", job_id, protocol_version=protocol_version, finetune_credential=finetune, **options
             ) as session:
                 yield SimpleNamespace(
                     session=session,
@@ -443,7 +444,8 @@ def _result_pipeline(session, reply):
 
 
 @pytest.mark.asyncio
-async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_typed_result(monkeypatch):
+@pytest.mark.parametrize("workspace", ["workspace", "account-name%40project-name%40AML"])
+async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_typed_result(monkeypatch, workspace):
     socket = _QueuedSocket()
     finetune = _FineTuneCredential()
     session, user, _ = _queued_session(monkeypatch, [socket], finetune_credential=finetune)
@@ -459,7 +461,7 @@ async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_
                 {
                     "sequence": 5,
                     "attempt_id": "attempt",
-                    "result_url": _RESULT_PREFIX + rollout_id + "/result",
+                    "result_url": _RESULT_PREFIX.replace("/workspace/", f"/{workspace}/") + rollout_id + "/result",
                 },
             )
         )
@@ -488,6 +490,18 @@ async def test_result_reference_uses_original_project_scope_fresh_auth_and_full_
         _RESULT_PREFIX + "{id}/result#fragment",
         _RESULT_PREFIX + "{other}/result",
         _RESULT_PREFIX.replace("/group/", "/%2f/") + "{id}/result",
+        *[
+            _RESULT_PREFIX.replace("/workspace/", f"/{workspace}/") + "{id}/result"
+            for workspace in (
+                "account%2Fproject",
+                "account%2fproject",
+                "account%5Cproject",
+                "account%2540project",
+                "account%4",
+                "account%GGproject",
+                "..",
+            )
+        ],
     ],
 )
 async def test_invalid_result_references_never_forward_credentials(monkeypatch, route):
@@ -549,6 +563,32 @@ async def test_result_lookup_status_size_and_shape_failures(monkeypatch, status,
         with pytest.raises(RLERolloutError) as caught:
             await call
         assert caught.value.code == code
+        assert len(requests) == 1 and responses[0].closed
+
+
+@pytest.mark.asyncio
+async def test_v3_result_download_default_remains_eight_mib(monkeypatch):
+    socket = _QueuedSocket()
+    session, _, _ = _queued_session(monkeypatch, [socket])
+    requests, responses = _result_pipeline(session, lambda _: (200, b"x" * (DEFAULT_MAX_RESPONSE_BYTES + 1)))
+    async with session:
+        call = _call(session)
+        header, _ = await _sent(socket)
+        rollout_id = header["rollout_id"]
+        socket.incoming.put_nowait(
+            _frame(
+                "completed",
+                rollout_id,
+                {
+                    "sequence": 1,
+                    "attempt_id": "attempt",
+                    "result_url": _RESULT_PREFIX + rollout_id + "/result",
+                },
+            )
+        )
+        with pytest.raises(RLERolloutError) as caught:
+            await call
+        assert caught.value.code == "RolloutResultTooLarge"
         assert len(requests) == 1 and responses[0].closed
 
 
@@ -723,8 +763,9 @@ async def test_legacy_finetune_identity_matches_b7_and_bounds_connection_age(mon
     "options",
     [
         {"protocol_version": "v2"},
-        {"protocol_version": "v4"},
+        {"protocol_version": "v5"},
         {"protocol_version": "v3", "server_managed_token_renewal": True},
+        {"protocol_version": "v4", "server_managed_token_renewal": True},
         {"finetune_credential": _FineTuneCredential(), "server_managed_token_renewal": True},
         {"protocol_version": "v3", "job_id": "ftjob-unsafe/path"},
     ],

@@ -77,9 +77,10 @@ class _Connection:
 class AsyncRolloutClient:
     """An event-loop-local shared session with SDK admission and deployment handoff.
 
-    ``protocol_version="v3"`` opts into durable queued delivery and original-ID
-    attachment recovery instead of the legacy drain/HTTP recovery described below.
-    Omission preserves legacy v2/v1 negotiation.
+    Sessions default to V4 durable queued delivery and original-ID attachment recovery.
+    V4 always downloads the full result over HTTP after a completion notification.
+    Select ``protocol_version="v3"`` for V3, or explicitly pass ``None`` for legacy
+    v2/v1 negotiation and the drain/HTTP recovery described below.
 
     The timeout starts after concurrency admission. By default, renewal waits for pending
     calls to settle before replacing the socket. Server-managed token renewal
@@ -99,23 +100,24 @@ class AsyncRolloutClient:
         *,
         server_managed_token_renewal: bool = False,
         finetune_credential: Optional[AsyncTokenCredential] = None,
-        protocol_version: Optional[str] = None,
+        protocol_version: Optional[str] = "v4",
     ) -> None:
         validate_rollout_session(environment_name, environment_version)
         if not isinstance(server_managed_token_renewal, bool):
             raise ValueError("server_managed_token_renewal must be a bool")
-        if protocol_version not in (None, "v3"):
-            raise ValueError('protocol_version must be None (legacy) or "v3"')
+        if protocol_version not in (None, "v3", "v4"):
+            raise ValueError('protocol_version must be None (legacy), "v3", or "v4"')
         if finetune_credential is not None and server_managed_token_renewal:
             raise ValueError("Separate fine-tuning credentials require client-managed token renewal.")
-        if protocol_version == "v3" and server_managed_token_renewal:
-            raise ValueError("Queued V3 requires client-managed token renewal.")
+        if protocol_version in ("v3", "v4") and server_managed_token_renewal:
+            raise ValueError("Queued V3/V4 requires client-managed token renewal.")
         self._operations = operations
         self._finetune_credential = finetune_credential
         self._server_managed_token_renewal = server_managed_token_renewal
         self._name = environment_name
         self._version = environment_version
         self._job_id = job_id
+        self._default_max_response_bytes = 32 * 1024 * 1024 if protocol_version == "v4" else DEFAULT_MAX_RESPONSE_BYTES
         self._admission = asyncio.Semaphore(_MAX_CONCURRENT_ROLLOUTS)
         self._send_lock = asyncio.Lock()
         self._active: Optional[_Connection] = None
@@ -126,10 +128,10 @@ class AsyncRolloutClient:
         self._closed_event = asyncio.Event()
         self._admission_stopped = asyncio.Event()
         self._queued: Optional[_QueuedRolloutClient] = None
-        if protocol_version == "v3":
+        if protocol_version in ("v3", "v4"):
             from ._queued_rollout_client_async import _QueuedRolloutClient
 
-            self._queued = _QueuedRolloutClient(self)
+            self._queued = _QueuedRolloutClient(self, protocol_version)
 
     @property
     def _closed(self) -> bool:
@@ -494,11 +496,11 @@ class AsyncRolloutClient:
         rollout_id: Optional[str] = None,
         timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
-        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        max_response_bytes: Optional[int] = None,
     ) -> RolloutResult:
         """Execute with a default 1860-second timeout starting after SDK admission.
 
-        Explicit V3 sessions wait through durable acceptance and worker retries,
+        V3 and default V4 sessions wait through durable acceptance and worker retries,
         then return the full typed result. Disconnection resumes by attachment with
         the last received durable cursor; it never replays execution. The timeout
         and admission permit also cover bounded recovery and result retrieval.
@@ -526,12 +528,16 @@ class AsyncRolloutClient:
         :paramtype timeout: float
         :keyword progress_callback: Lightweight synchronous callback receiving correlated progress.
         :paramtype progress_callback: callable or None
-        :keyword max_response_bytes: Positive response safety budget; protocol payloads remain capped at 8 MiB.
-        :paramtype max_response_bytes: int
+        :keyword max_response_bytes: Positive response safety budget in bytes. Defaults to 32 MiB for V4
+            HTTP result downloads and 8 MiB otherwise. None selects the protocol default. Larger V4
+            HTTP downloads can be enabled by increasing this value; WebSocket payloads remain capped at 8 MiB.
+        :paramtype max_response_bytes: int or None
         :return: The completed rollout.
         :rtype: ~azure.ai.projects.rle.RolloutResult
         :raises ~azure.ai.projects.operations.RLERolloutUnknownOutcomeError: Submitted outcome cannot be determined.
         """
+        if max_response_bytes is None:
+            max_response_bytes = self._default_max_response_bytes
         validate_rollout_options(timeout, max_response_bytes)
         body = build_rollout_body(
             task=task, policy=policy, sampling=sampling, rollout_id=rollout_id, job_id=self._job_id,

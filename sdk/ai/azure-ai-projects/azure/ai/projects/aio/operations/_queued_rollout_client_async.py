@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 # ------------------------------------
-"""Opt-in durable Execute Rollout V3 transport.
+"""Opt-in durable Execute Rollout V3/V4 transport.
 
 The public AsyncRolloutClient owns this transport and its admission/deadline policy.
 One driver serializes commands while a separate bounded receiver dispatches events.
@@ -42,11 +42,10 @@ _LOGGER = logging.getLogger(__name__)
 _WIRE_LOGGER = logging.Logger(__name__ + ".wire")
 _WIRE_LOGGER.disabled = True
 _MAX_RECONNECTS = 3
-_PROTOCOL = "rle.execute-rollout.v3"
 _RESULT_ROUTE = re.compile(
     r"/rle/v1\.0/subscriptions/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/resourceGroups/[A-Za-z0-9_.()-]+"
-    r"/providers/Microsoft\.MachineLearningServices/workspaces/[A-Za-z0-9_-]+"
+    r"/providers/Microsoft\.MachineLearningServices/workspaces/(?:[A-Za-z0-9_-]|%40)+"
     r"/rl_environments/rollouts/(?P<rollout>[0-9a-f]{32})/result"
 )
 _SERVICE_CODES = frozenset(
@@ -121,7 +120,7 @@ class _Pending:
     ) -> None:
         self.request = request
         self.deadline = deadline
-        self.limit = min(limit, DEFAULT_MAX_RESPONSE_BYTES)
+        self.limit = limit
         self.callback = callback
         self.future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self.submitted = False
@@ -130,8 +129,10 @@ class _Pending:
 
 
 class _QueuedRolloutClient:
-    def __init__(self, owner: AsyncRolloutClient) -> None:
+    def __init__(self, owner: AsyncRolloutClient, protocol_version: str) -> None:
         self._owner = owner
+        self._protocol = "rle.execute-rollout." + protocol_version
+        self._completion_only = protocol_version == "v4"
         if owner._job_id is not None and (
             not isinstance(owner._job_id, str)
             or len(owner._job_id) > 991
@@ -165,7 +166,9 @@ class _QueuedRolloutClient:
             # Only admitted calls retain serialized frames; reject invalid input before sending.
             frame = serialize_rollout_frame("execute", body)
             _object(frame[4 + struct.unpack(">I", frame[:4])[0] :])
-            pending = _Pending(frame, deadline, limit, callback)
+            pending = _Pending(
+                frame, deadline, limit if self._completion_only else min(limit, DEFAULT_MAX_RESPONSE_BYTES), callback
+            )
             self._pending[rollout_id] = pending
             if self._driver is None or self._driver.done():
                 self._driver = asyncio.create_task(self._run())
@@ -242,14 +245,14 @@ class _QueuedRolloutClient:
             ),
             token=headers["aml-user-token"],
             additional_headers=headers,
-            subprotocols=(Subprotocol(_PROTOCOL),),
+            subprotocols=(Subprotocol(self._protocol),),
             timeout=max(0.0, deadline - time.monotonic()),
             max_size=DEFAULT_MAX_RESPONSE_BYTES + 4100,
             close_timeout=5.0,
             logger=_WIRE_LOGGER,
             max_queue=16,
         )
-        if self._socket.subprotocol != _PROTOCOL:
+        if self._socket.subprotocol != self._protocol:
             raise _error("QueuedProtocolRequired")
         if expiry - time.time() <= 60:
             raise _error("RolloutCredentialExpired")
@@ -322,6 +325,10 @@ class _QueuedRolloutClient:
                 except Exception:  # pylint: disable=broad-exception-caught
                     pending.future.set_exception(_error("RolloutProgressCallbackFailed", rollout_id))
         elif kind == "completed":
+            if self._completion_only and (
+                payload.get("result_available") is not True or "result" in payload or "result_url" in payload
+            ):
+                raise ValueError("Invalid V4 completion notification.")
             pending.future.set_result(payload)
         elif kind in ("failed", "error"):
             code = payload.get("code")
@@ -451,7 +458,9 @@ class _QueuedRolloutClient:
             await self._drop(receive)
 
     async def _result(self, rollout_id: str, terminal: dict[str, Any], limit: int) -> RolloutResult:
-        if "result" in terminal and "result_url" not in terminal:
+        if self._completion_only:
+            result = await self._fetch_result(rollout_id, limit)
+        elif "result" in terminal and "result_url" not in terminal:
             result = terminal["result"]
         elif "result_url" in terminal and "result" not in terminal:
             route = terminal["result_url"]
@@ -486,7 +495,18 @@ class _QueuedRolloutClient:
                 data = bytearray()
                 async for chunk in response.iter_bytes():
                     if len(data) + len(chunk) > limit:
-                        raise _error("RolloutResultTooLarge", rollout_id)
+                        received = len(data) + len(chunk)
+                        raise RLERolloutError(
+                            None,
+                            code="RolloutResultTooLarge",
+                            rollout_id=rollout_id,
+                            message=(
+                                f"The rollout completed, but its result download exceeded max_response_bytes={limit} "
+                                f"bytes (received at least {received} bytes). Increase max_response_bytes in "
+                                f"execute_rollout(...), for example max_response_bytes={max(2 * limit, received)}. "
+                                "Execution was not replayed."
+                            ),
+                        )
                     data.extend(chunk)
                 return _object(bytes(data))
             finally:
