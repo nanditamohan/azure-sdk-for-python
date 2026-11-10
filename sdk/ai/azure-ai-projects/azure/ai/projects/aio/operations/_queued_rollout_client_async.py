@@ -82,6 +82,33 @@ def _error(code: str, rollout_id: Optional[str] = None) -> RLERolloutError:
     )
 
 
+def _failure_cause(value: Any) -> Optional[dict[str, Any]]:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or any(
+            not isinstance(value.get(field), str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", value[field]) is None
+            for field in ("code", "dependency", "operation")
+        )
+        or type(value.get("retryable")) is not bool
+        or (
+            value.get("error_type") is not None
+            and (
+                not isinstance(value["error_type"], str)
+                or re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", value["error_type"]) is None
+            )
+        )
+    ):
+        raise ValueError("Invalid queued failure cause.")
+    # Do not expose arbitrary upstream fields, such as traceback or dependency bodies.
+    return {
+        field: value[field]
+        for field in ("code", "dependency", "operation", "retryable", "error_type")
+        if field in value
+    }
+
+
 def _unique_object(pairs: Any) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -339,7 +366,24 @@ class _QueuedRolloutClient:
                 or (kind == "failed" and payload["retryable"])
             ):
                 raise ValueError("Invalid queued error.")
-            pending.future.set_exception(_error(code if code in _SERVICE_CODES else "QueuedRolloutFailed", rollout_id))
+            cause = _failure_cause(payload.get("cause")) if kind == "failed" else None
+            if cause is not None:
+                message = payload["message"]
+                if len(message.encode("utf-8")) > 4096:
+                    raise ValueError("Queued failure message exceeded the limit.")
+                pending.future.set_exception(
+                    RLERolloutError(
+                        None,
+                        code=code if code in _SERVICE_CODES else "QueuedRolloutFailed",
+                        message=message,
+                        rollout_id=rollout_id,
+                        cause=cause,
+                        attempt_id=payload["attempt_id"],
+                        sequence=payload["sequence"],
+                    )
+                )
+            else:
+                pending.future.set_exception(_error(code if code in _SERVICE_CODES else "QueuedRolloutFailed", rollout_id))
 
     async def _drop(self, receive: Optional[asyncio.Task]) -> None:
         if receive is not None:

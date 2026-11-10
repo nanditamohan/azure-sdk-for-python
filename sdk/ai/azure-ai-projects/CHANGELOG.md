@@ -23,6 +23,7 @@
 
 ### Bugs Fixed
 
+* Preserve the service's bounded caller-facing grader reason and structured cause on queued terminal errors, including original-ID attachment recovery. Queue-level codes remain compatible; older failures without a cause retain generic messages. Exceptions expose `service_message`, `cause`, `attempt_id`, and `sequence` without logging caller content.
 * Match the queued service's bounded opaque job-ID contract instead of requiring a 24-hex suffix. Accept managed 32-hex and other safe `ftjob-` identifiers unchanged, retaining ASCII character and 991-character limits through execution and attachment recovery.
 
 ## 2.7.0b7.dev20261104+queuedv3.2 (Unreleased)

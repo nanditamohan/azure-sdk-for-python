@@ -173,6 +173,14 @@ class RLERolloutError(HttpResponseError):
     :vartype code: str or None
     :ivar rollout_id: The rollout this failure belongs to, echoed for log correlation.
     :vartype rollout_id: str or None
+    :ivar service_message: Caller-facing service reason, without correlation formatting.
+    :vartype service_message: str or None
+    :ivar cause: Structured dependency classification, when supplied by queued delivery.
+    :vartype cause: Mapping[str, Any] or None
+    :ivar attempt_id: Durable terminal attempt identifier, when available.
+    :vartype attempt_id: str or None
+    :ivar sequence: Durable terminal sequence, when available.
+    :vartype sequence: int or None
     """
 
     def __init__(
@@ -182,9 +190,16 @@ class RLERolloutError(HttpResponseError):
         code: Optional[str] = None,
         message: Optional[str] = None,
         rollout_id: Optional[str] = None,
+        cause: Optional[Mapping[str, Any]] = None,
+        attempt_id: Optional[str] = None,
+        sequence: Optional[int] = None,
     ) -> None:
         self.code = code
         self.rollout_id = rollout_id
+        self.service_message = message
+        self.cause = dict(cause) if cause is not None else None
+        self.attempt_id = attempt_id
+        self.sequence = sequence
         detail = message or "the RLE service did not complete the rollout"
         prefix = f"{code}: " if code else ""
         suffix = f" (rollout_id={rollout_id})" if rollout_id else ""

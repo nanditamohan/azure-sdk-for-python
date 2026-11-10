@@ -664,6 +664,17 @@ for known service codes such as `QueuedAcceptanceDisabled`, `HistoryUnavailable`
 or `queued_execution_failed`. Unknown service codes become `QueuedRolloutFailed`.
 History/dependency errors are not fabricated successes or automatic re-execution.
 
+New service versions also provide a structured `RLERolloutError.cause` for grader
+failures, with `code`, `dependency`, `operation`, `retryable`, and optional
+`error_type`. `service_message` preserves the bounded caller-facing reason;
+`attempt_id`, `sequence`, and `rollout_id` identify the terminal execution.
+These fields survive attachment recovery, including terminals synthesized from
+durable state. Older failures without a cause keep the generic message. Cause
+identifiers are validated, unknown cause codes remain available, and extra fields
+such as traceback are discarded. Treat the reason as customer content: do not
+log it to shared telemetry. Nested cause retryability describes the dependency;
+it does not authorize replaying a terminal rollout.
+
 V4 uses the same durable execution as V3, but every `completed` event contains
 only the durable event identity and `result_available: true`, never a graph or
 result reference. The SDK automatically calls
