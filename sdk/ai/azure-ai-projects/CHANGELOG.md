@@ -2,6 +2,10 @@
 
 ## 2.7.0b7.dev20261104+queuedv3.4 (Unreleased)
 
+### Features Added
+
+* Added optional per-rollout `max_completion_tokens`, `temperature`, `top_p`, `top_k`, and `seed` defaults to `rle.SamplingOptions`. Explicit model requests override these defaults; service/provider limits still apply, and training capture requires neutral top-p/top-k.
+
 ### Breaking Changes
 
 * Asynchronous `get_rollout_client()` and direct `AsyncRolloutClient` construction now default to V4 queued delivery. A V4-capable backend is required; failed negotiation never falls back to legacy execution. Explicit `protocol_version="v3"` selects V3, and explicit `protocol_version=None` retains legacy v2/v1 behavior, including legacy server-managed token renewal. Synchronous/asynchronous HTTP operation defaults are unchanged.

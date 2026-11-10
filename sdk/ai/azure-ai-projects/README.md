@@ -430,6 +430,30 @@ To report an issue with the client library, or request additional features, plea
 
 ## Shared RLE rollout sessions (private preview)
 
+### Model sampling defaults
+
+Pass `SamplingOptions` to HTTP or shared-session `execute_rollout` calls:
+
+```python
+from azure.ai.projects.rle import SamplingOptions
+
+sampling = SamplingOptions(
+    max_completion_tokens=32768,
+    temperature=0.7,
+    top_p=1.0,
+    top_k=-1,
+    seed=42,
+)
+# Add sampling=sampling to your existing execute_rollout call.
+```
+
+All fields are optional defaults for each model call through Capture Proxy.
+Explicit model-request values override them; operator ceilings and remaining
+context still apply. A requested maximum is not a guaranteed response length.
+Training capture requires neutral `top_p=1` and `top_k=-1` or `0`. Evaluation
+provider support varies, and a seed does not guarantee reproducibility.
+The SDK does not read local `rle.toml`; that configuration is CLI-only.
+
 ### Legacy sessions (default)
 
 Construct the client with `allow_preview=True`. For training, open one session for the

@@ -32,7 +32,7 @@ from azure.ai.projects.operations._patch_rle_rollout import (
     deserialize_rollout_frame,
     serialize_rollout_frame,
 )
-from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy
+from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy, SamplingOptions
 
 
 class _Credential:
@@ -289,6 +289,26 @@ async def test_harness_override_is_preserved_in_execute_frame(monkeypatch, harne
             assert "harness" not in body
         else:
             assert body["harness"] == harness.as_dict()
+        _complete(socket, header["rollout_id"])
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_mapping", [False, True])
+async def test_sampling_defaults_are_preserved_in_execute_frame(monkeypatch, as_mapping):
+    values = {
+        "max_completion_tokens": 32768, "temperature": 0,
+        "top_p": 1, "top_k": -1, "seed": 0,
+    }
+    sampling = SamplingOptions(values) if as_mapping else SamplingOptions(**values)
+    socket = _Socket()
+    session, _, _ = _session(monkeypatch, [socket])
+    async with session:
+        task = asyncio.create_task(session.execute_rollout(
+            task={"row": 1}, policy=_policy(), sampling=sampling,
+        ))
+        header, payload = await _sent(socket)
+        assert json.loads(payload)["sampling"] == values
         _complete(socket, header["rollout_id"])
         await task
 

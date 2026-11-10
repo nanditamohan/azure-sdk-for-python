@@ -168,13 +168,48 @@ class SamplingOptions(_Model):
     :ivar renderer_name: Optional Capture Proxy renderer profile. The service picks a compatible
      default when omitted.
     :vartype renderer_name: str
+    :ivar max_completion_tokens: Default maximum output tokens per model call, subject to service
+     ceilings and remaining model context. Explicit model-request values take precedence.
+    :vartype max_completion_tokens: int
+    :ivar temperature: Default temperature between 0 and 2, inclusive.
+    :vartype temperature: float
+    :ivar top_p: Default nucleus probability in (0, 1]. Training capture requires 1.
+    :vartype top_p: float
+    :ivar top_k: Default candidate count; -1 or 0 disables filtering. Training requires disabled filtering.
+    :vartype top_k: int
+    :ivar seed: Default nonnegative 32-bit sampling seed. Reproducibility depends on the provider.
+    :vartype seed: int
     """
 
     renderer_name: Optional[str] = rest_field(visibility=_VISIBILITY)
     """Optional Capture Proxy renderer profile."""
 
+    max_completion_tokens: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Default maximum output tokens per request; service and context limits still apply."""
+
+    temperature: Optional[float] = rest_field(visibility=_VISIBILITY)
+    """Default sampling temperature."""
+
+    top_p: Optional[float] = rest_field(visibility=_VISIBILITY)
+    """Default nucleus sampling probability."""
+
+    top_k: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Default candidate count, or -1/0 to disable filtering."""
+
+    seed: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Default sampling seed; provider support is required."""
+
     @overload
-    def __init__(self, *, renderer_name: Optional[str] = None) -> None: ...
+    def __init__(
+        self,
+        *,
+        renderer_name: Optional[str] = None,
+        max_completion_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> None: ...
 
     @overload
     def __init__(self, mapping: Mapping[str, Any]) -> None:
