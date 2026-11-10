@@ -459,7 +459,7 @@ async with project_client.rle.get_rollout_client(
                 policy=policy,
                 harness=HarnessConfiguration(type="gym"),
                 timeout=1860,
-                max_response_bytes=8 * 1024 * 1024,
+                max_response_bytes=32 * 1024 * 1024,
             )
             for task in tasks
         )
@@ -470,6 +470,9 @@ Shared sessions are asynchronous only. Entry is lazy: the first execution obtain
 credentials and opens the socket. Use `await session.close()` without a context manager,
 and close the session before the project client. Existing sync and async
 `client.rle.execute_rollout(...)` retain their HTTP default and do not create a session.
+Shared sessions default to V4 and require a V4-capable backend; there is no automatic
+fallback. Select `protocol_version="v3"` for V3 or explicitly pass
+`protocol_version=None` for legacy v2/v1.
 
 `job_id` optionally associates rollouts with a job. Omit it when running outside
 a job context; no job identifier is generated. Each execution still has its own
@@ -491,6 +494,10 @@ correlates out-of-order results by rollout ID. `progress_callback`, if supplied,
 a mapping containing `rollout_id`; it must be a lightweight synchronous callable.
 Callback exceptions and malformed progress are surfaced to the associated caller.
 
+The following connection renewal, deployment-drain and HTTP status-recovery details
+describe explicit legacy sessions (`protocol_version=None`). Default V4 sessions use
+the durable attachment and result retrieval described in the queued-session section below.
+
 For long jobs, the SDK stops new submissions at the age/token renewal boundary, waits
 for current pending calls to settle, then closes the old socket before opening its replacement.
 Deployment draining is different: existing work stays on the draining socket while new
@@ -506,7 +513,8 @@ The handshake supplies both `Authorization` and `aml-user-token`; both are redac
 the SDK WebSocket logger.
 
 For deployments with server-side delegated token renewal, pass
-`server_managed_token_renewal=True` to `get_rollout_client`. This disables
+`server_managed_token_renewal=True` and `protocol_version=None` to
+`get_rollout_client`. This disables
 age/token-based replacement of a healthy socket; tokens are still acquired and
 validated for every initial or replacement handshake. No user token is sent in
 individual execute frames. RLE must renew the connection caller's token before
@@ -594,7 +602,7 @@ applies. Frame headers are limited to 4 KiB and reject duplicate JSON keys.
 Deployment-drain handoff is in **2.7.0b5 (Unreleased)** and requires publishing that
 development wheel before consumers pin it.
 
-### Durable queued sessions (explicit V3/V4 opt-in)
+### Durable queued sessions (V4 by default)
 
 Use the same asynchronous public factory and typed request/result models:
 
@@ -603,7 +611,6 @@ async with project_client.rle.get_rollout_client(
     environment_name="environment",
     environment_version="1",
     job_id=training_job_id,  # Optional; preserve the actual training job ID unchanged.
-    protocol_version="v4",
     finetune_credential=finetune_credential,  # Optional, caller-owned app identity.
 ) as session:
     result = await session.execute_rollout(
@@ -614,13 +621,13 @@ async with project_client.rle.get_rollout_client(
     )
 ```
 
-Omitting `protocol_version` preserves the legacy v2/v1 negotiation and lifecycle
-described above. Explicit `"v3"` or `"v4"` offers **only** its corresponding
+Omitting `protocol_version` selects V4. Explicit `"v3"` or `"v4"` offers **only** its corresponding
 `rle.execute-rollout.v3` or `rle.execute-rollout.v4` subprotocol and verifies
 the selected protocol. Disabled delivery, failed negotiation or disabled queued
 acceptance is an explicit error, never a fallback to legacy execution. Synchronous
 and asynchronous `rle.execute_rollout()` retain their HTTP defaults; shared
-WebSocket sessions remain asynchronous only.
+WebSocket sessions remain asynchronous only. To retain legacy v2/v1 negotiation
+and lifecycle, explicitly pass `protocol_version=None`.
 
 V3/V4 `accepted` means durable admission, **not completion**. The SDK keeps the call
 pending through queued/running/finalizing state and worker retries, dispatches

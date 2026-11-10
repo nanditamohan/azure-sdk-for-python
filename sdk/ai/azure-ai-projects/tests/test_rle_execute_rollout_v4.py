@@ -10,6 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from azure.ai.projects.aio import AIProjectClient
+from azure.ai.projects.aio.operations import _patch_rle_async as transport
+from azure.ai.projects.aio.operations._rollout_client_async import AsyncRolloutClient
 from azure.ai.projects.operations import RLERolloutError
 from azure.ai.projects.operations._patch_rle_rollout import DEFAULT_MAX_RESPONSE_BYTES
 from test_rle_execute_rollout_queued import (
@@ -21,7 +24,7 @@ from test_rle_execute_rollout_queued import (
     _result_pipeline,
     _running,
 )
-from test_rle_execute_rollout_websocket import _RecoveryResponse, _frame, _policy, _sent
+from test_rle_execute_rollout_websocket import _Credential, _RecoveryResponse, _frame, _policy, _sent
 
 _PROTOCOL = "rle.execute-rollout.v4"
 
@@ -32,6 +35,37 @@ class _V4Socket(_QueuedSocket):
 
 def _completion(sequence=1):
     return {"sequence": sequence, "attempt_id": "attempt", "result_available": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_factory", [False, True])
+async def test_default_session_negotiates_v4_and_fetches_full_result(monkeypatch, use_factory):
+    socket = _V4Socket()
+    handshakes = []
+
+    async def connect(*_args, **kwargs):
+        handshakes.append(kwargs)
+        return socket
+
+    monkeypatch.setattr(transport, "websocket_connect", connect)
+    async with AIProjectClient(
+        "https://account.test/api/projects/project", _Credential(), allow_preview=True
+    ) as client:
+        session = (
+            client.rle.get_rollout_client("environment", "1")
+            if use_factory
+            else AsyncRolloutClient(client.rle, "environment", "1")
+        )
+        requests, responses = _result_pipeline(session, lambda request: (200, _result(request.url.split("/")[-2])))
+        async with session:
+            call = _call(session)
+            header, _ = await _sent(socket)
+            socket.incoming.put_nowait(_frame("completed", header["rollout_id"], _completion()))
+            result = await call
+            assert result.rollout_id == header["rollout_id"]
+            assert result.sequences[0]["input_ids"] == [1, 2]
+            assert handshakes[0]["subprotocols"] == (_PROTOCOL,)
+            assert len(requests) == 1 and responses[0].closed
 
 
 @pytest.mark.asyncio

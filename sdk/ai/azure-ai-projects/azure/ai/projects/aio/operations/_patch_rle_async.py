@@ -1276,14 +1276,15 @@ class RLEOperations:
         *,
         server_managed_token_renewal: bool = False,
         finetune_credential: Optional["AsyncTokenCredential"] = None,
-        protocol_version: Optional[str] = None,
+        protocol_version: Optional[str] = "v4",
     ) -> "AsyncRolloutClient":
         """Create a lazy asynchronous shared Execute Rollout client.
 
-        The following drain/HTTP recovery behavior describes the legacy default.
-        Set ``protocol_version="v3"`` or ``"v4"`` for durable acceptance and original-ID
-        WebSocket attachment recovery, without execution replay or legacy fallback.
-        V4 receives a completion notification, then retrieves the full result over HTTP.
+        Sessions default to V4 durable acceptance and original-ID WebSocket attachment
+        recovery, without execution replay or legacy fallback. V4 receives a completion
+        notification, then retrieves the full result over HTTP. Set ``protocol_version="v3"``
+        for V3 or explicitly pass ``None`` for legacy v2/v1 negotiation.
+        The following drain/HTTP recovery behavior applies to legacy sessions only.
 
         The SDK manages admission for up to 32 concurrent rollouts per client,
         with no public concurrency override. The session owns one active submission socket. Draining
@@ -1305,6 +1306,7 @@ class RLEOperations:
         :type job_id: str or None
         :keyword server_managed_token_renewal: Keep a healthy socket open regardless of age or token
             expiry. Requires service-side delegated token renewal and long-lived connections.
+            Requires legacy selection with ``protocol_version=None``.
             Default False retains age/token-based connection replacement.
         :paramtype server_managed_token_renewal: bool
         :keyword finetune_credential: Optional fine-tuning identity sent as
@@ -1313,8 +1315,9 @@ class RLEOperations:
             remaining. Cannot be combined with server-managed token renewal.
             The caller owns and closes this credential.
         :paramtype finetune_credential: ~azure.core.credentials_async.AsyncTokenCredential or None
-        :keyword protocol_version: Set to ``"v3"`` or ``"v4"`` for durable queued execution, without
-            legacy fallback. Omit for the unchanged v2/v1 preference. Accepted work survives
+        :keyword protocol_version: Defaults to ``"v4"`` for durable queued execution, without
+            legacy fallback. Set to ``"v3"`` for V3 or explicitly pass ``None`` for legacy v2/v1.
+            Accepted work survives
             disconnection; recovery attaches the original ID within its original deadline.
             V4 downloads every completed result using GET and returns the same full
             ``RolloutResult``; no separate retrieval or local file handling is needed.

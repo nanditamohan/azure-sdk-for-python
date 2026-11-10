@@ -77,10 +77,10 @@ class _Connection:
 class AsyncRolloutClient:
     """An event-loop-local shared session with SDK admission and deployment handoff.
 
-    ``protocol_version="v3"`` or ``"v4"`` opts into durable queued delivery and original-ID
-    attachment recovery instead of the legacy drain/HTTP recovery described below.
+    Sessions default to V4 durable queued delivery and original-ID attachment recovery.
     V4 always downloads the full result over HTTP after a completion notification.
-    Omission preserves legacy v2/v1 negotiation.
+    Select ``protocol_version="v3"`` for V3, or explicitly pass ``None`` for legacy
+    v2/v1 negotiation and the drain/HTTP recovery described below.
 
     The timeout starts after concurrency admission. By default, renewal waits for pending
     calls to settle before replacing the socket. Server-managed token renewal
@@ -100,7 +100,7 @@ class AsyncRolloutClient:
         *,
         server_managed_token_renewal: bool = False,
         finetune_credential: Optional[AsyncTokenCredential] = None,
-        protocol_version: Optional[str] = None,
+        protocol_version: Optional[str] = "v4",
     ) -> None:
         validate_rollout_session(environment_name, environment_version)
         if not isinstance(server_managed_token_renewal, bool):
@@ -500,7 +500,7 @@ class AsyncRolloutClient:
     ) -> RolloutResult:
         """Execute with a default 1860-second timeout starting after SDK admission.
 
-        Explicit V3 sessions wait through durable acceptance and worker retries,
+        V3 and default V4 sessions wait through durable acceptance and worker retries,
         then return the full typed result. Disconnection resumes by attachment with
         the last received durable cursor; it never replays execution. The timeout
         and admission permit also cover bounded recovery and result retrieval.
