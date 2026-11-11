@@ -470,6 +470,7 @@ async def test_failure_cause_is_forward_compatible_but_does_not_expose_extra_fie
         with pytest.raises(RLERolloutError) as caught:
             await call
         assert caught.value.cause["code"] == cause["code"]
+        assert caught.value.retryable is False
         assert "traceback" not in caught.value.cause
         assert "not a public" not in str(caught.value)
 

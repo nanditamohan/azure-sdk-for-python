@@ -289,6 +289,9 @@ class RolloutRequest(_Model):
     :vartype policy: ~azure.ai.projects.rle.RolloutPolicy
     :ivar job_id: Optional training-job identifier used for durable rollout correlation.
     :vartype job_id: str
+    :ivar phase: Optional rollout phase, "train" or "eval". When omitted, the service defaults
+     new rollouts to "train".
+    :vartype phase: str
     :ivar sampling: How this rollout's completions are sampled and rendered. Optional.
     :vartype sampling: ~azure.ai.projects.rle.SamplingOptions
     :ivar harness: Optional callable target for this rollout only. The environment version's
@@ -304,6 +307,8 @@ class RolloutRequest(_Model):
     """Where this rollout's weights come from. Required."""
     job_id: Optional[str] = rest_field(visibility=_VISIBILITY)
     """Training-job identifier used for durable rollout correlation."""
+    phase: Literal["train", "eval"] | None = rest_field(visibility=_VISIBILITY)
+    """Rollout phase, "train" or "eval"; omitted requests use the service's train default."""
     sampling: Optional[SamplingOptions] = rest_field(visibility=_VISIBILITY)
     """How this rollout's completions are sampled and rendered."""
     harness: Optional[HarnessConfiguration] = rest_field(visibility=_VISIBILITY)
@@ -317,6 +322,7 @@ class RolloutRequest(_Model):
         task: Any,
         policy: RolloutPolicy,
         job_id: Optional[str] = None,
+        phase: Literal["train", "eval"] | None = None,
         sampling: Optional[SamplingOptions] = None,
         harness: Optional[HarnessConfiguration] = None,
     ) -> None: ...

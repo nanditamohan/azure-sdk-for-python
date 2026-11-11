@@ -224,6 +224,57 @@ async def test_http_harness_override_on_both_clients(rollout_server, asynchronou
         assert body["harness"] == harness.as_dict()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("phase_options", [{}, {"phase": None}, {"phase": "train"}, {"phase": "eval"}])
+async def test_http_phase_is_optional_and_top_level(rollout_server, asynchronous, phase_options):
+    recorder, endpoint = rollout_server
+    recorder.body = {"rollout_id": "fixed"}
+    options = {
+        "task": {"row": 1},
+        "policy": _policy(sequence_id=0),
+        "rollout_id": "fixed",
+        **phase_options,
+    }
+    if asynchronous:
+        async with AsyncAIProjectClient(
+            endpoint=endpoint, credential=_AsyncFakeCredential(), allow_preview=True
+        ) as client:
+            await client.rle.execute_rollout("environment", "1", enforce_https=False, **options)
+    else:
+        with _client(endpoint) as client:
+            _rollout(client, "environment", "1", **options)
+
+    body = recorder.requests[0]["body"]
+    phase = phase_options.get("phase")
+    if phase is None:
+        assert "phase" not in body
+    else:
+        assert body["phase"] == phase
+    assert "phase" not in body["policy"]
+    assert body["policy"]["sequence_id"] == 0
+    assert body["policy"]["checkpoint_id"] == "checkpoint-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("phase", ["", "validation", "TRAIN", 0, False, [], {}])
+async def test_http_invalid_phase_is_rejected_before_submission(rollout_server, asynchronous, phase):
+    recorder, endpoint = rollout_server
+    if asynchronous:
+        async with AsyncAIProjectClient(
+            endpoint=endpoint, credential=_AsyncFakeCredential(), allow_preview=True
+        ) as client:
+            with pytest.raises(ValueError, match="phase must be"):
+                await client.rle.execute_rollout(
+                    "environment", "1", task={}, policy=_policy(), phase=phase, enforce_https=False
+                )
+    else:
+        with _client(endpoint) as client, pytest.raises(ValueError, match="phase must be"):
+            _rollout(client, "environment", "1", task={}, policy=_policy(), phase=phase)
+    assert not recorder.requests
+
+
 def test_forwards_the_caller_token_in_both_headers(rollout_server):
     """RLE needs ``aml-user-token`` in addition to ``Authorization``; it forwards that one to Loom."""
     recorder, endpoint = rollout_server

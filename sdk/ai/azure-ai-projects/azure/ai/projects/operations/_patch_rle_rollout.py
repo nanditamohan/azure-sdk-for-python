@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 import warnings
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from urllib.request import urlopen
 
@@ -181,6 +181,9 @@ class RLERolloutError(HttpResponseError):
     :vartype attempt_id: str or None
     :ivar sequence: Durable terminal sequence, when available.
     :vartype sequence: int or None
+    :ivar retryable: Whether the service explicitly marks this terminal failure as retryable.
+     This does not make replaying the same rollout identifier safe.
+    :vartype retryable: bool
     """
 
     def __init__(
@@ -193,6 +196,7 @@ class RLERolloutError(HttpResponseError):
         cause: Optional[Mapping[str, Any]] = None,
         attempt_id: Optional[str] = None,
         sequence: Optional[int] = None,
+        retryable: bool = False,
     ) -> None:
         self.code = code
         self.rollout_id = rollout_id
@@ -200,6 +204,7 @@ class RLERolloutError(HttpResponseError):
         self.cause = dict(cause) if cause is not None else None
         self.attempt_id = attempt_id
         self.sequence = sequence
+        self.retryable = retryable
         detail = message or "the RLE service did not complete the rollout"
         prefix = f"{code}: " if code else ""
         suffix = f" (rollout_id={rollout_id})" if rollout_id else ""
@@ -285,6 +290,7 @@ def build_rollout_body(
     harness: Optional[HarnessConfiguration] = None,
     rollout_id: Optional[str] = None,
     job_id: Optional[str] = None,
+    phase: Literal["train", "eval"] | None = None,
 ) -> RolloutRequest:
     """Assemble a rollout request, generating an id when the caller did not supply one.
 
@@ -305,6 +311,9 @@ def build_rollout_body(
     :paramtype rollout_id: str or None
     :keyword job_id: Optional job identifier attached to the request.
     :paramtype job_id: str or None
+    :keyword phase: Optional rollout phase, "train" or "eval". Omitted when None so the service
+     applies its default.
+    :paramtype phase: str or None
     :return: The assembled request.
     :rtype: ~azure.ai.projects.models.RolloutRequest
     """
@@ -312,6 +321,8 @@ def build_rollout_body(
         raise ValueError("task is required: it is the record the environment resets on")
     if policy is None:
         raise ValueError("policy is required: a rollout must name where its weights come from")
+    if phase is not None and phase not in ("train", "eval"):
+        raise ValueError("phase must be 'train', 'eval', or None")
     return RolloutRequest(
         rollout_id=rollout_id or uuid.uuid4().hex,
         task=task,
@@ -319,6 +330,7 @@ def build_rollout_body(
         sampling=sampling,
         **({"job_id": job_id} if job_id is not None else {}),
         harness=harness,
+        phase=phase,
     )
 
 
@@ -413,7 +425,10 @@ def rollout_error_from_payload(payload: bytes, rollout_id: str) -> RLERolloutErr
         or not isinstance(value.get("message"), str)
     ):
         raise ValueError("Execute Rollout returned an invalid error")
-    return RLERolloutError(None, code=value.get("code"), message=value.get("message"), rollout_id=rollout_id)
+    return RLERolloutError(
+        None, code=value.get("code"), message=value.get("message"), rollout_id=rollout_id,
+        retryable=value.get("retryable") is True,
+    )
 
 
 def deserialize_rollout_response(response: Any, rollout_id: str) -> RolloutResult:

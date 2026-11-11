@@ -11,7 +11,7 @@ import logging
 import struct
 import time
 from types import SimpleNamespace
-from typing import Optional, get_type_hints
+from typing import Literal, Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -31,8 +31,9 @@ from azure.ai.projects.operations._patch_rle_rollout import (
     build_rollout_request,
     deserialize_rollout_frame,
     serialize_rollout_frame,
+    rollout_error_from_payload,
 )
-from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy, SamplingOptions
+from azure.ai.projects.rle import HarnessConfiguration, LoomPolicy, RolloutRequest, SamplingOptions
 
 
 class _Credential:
@@ -182,6 +183,52 @@ def test_rollout_operations_share_one_typed_harness_contract(operation):
     assert get_type_hints(operation)["harness"] == Optional[HarnessConfiguration]
 
 
+@pytest.mark.parametrize("operation", [
+    RLEOperations.execute_rollout,
+    transport.RLEOperations.execute_rollout,
+    AsyncRolloutClient.execute_rollout,
+    build_rollout_body,
+])
+def test_rollout_operations_expose_explicit_phase(operation):
+    assert get_type_hints(operation)["phase"] == Literal["train", "eval"] | None
+    parameter = inspect.signature(operation).parameters["phase"]
+    assert parameter.kind == inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is None
+
+
+@pytest.mark.parametrize("retryable,expected", [
+    (True, True), (False, False), (None, False), ("true", False), (1, False),
+])
+def test_terminal_error_preserves_only_explicit_retryable_boolean(retryable, expected):
+    error = rollout_error_from_payload(json.dumps({
+        "code": "RolloutDependencyFailed", "message": "Unavailable.", "retryable": retryable,
+    }).encode(), "original")
+    assert error.retryable is expected
+    assert error.rollout_id == "original"
+
+
+def test_terminal_error_without_retry_metadata_is_not_replayed():
+    error = rollout_error_from_payload(
+        b'{"code":"RolloutDependencyFailed","message":"Unavailable."}', "original"
+    )
+    assert error.retryable is False
+    assert RLERolloutUnknownOutcomeError(rollout_id="original").retryable is False
+
+
+@pytest.mark.parametrize("phase_options", [{}, {"phase": None}, {"phase": "train"}, {"phase": "eval"}])
+@pytest.mark.parametrize("from_mapping", [False, True])
+def test_rollout_request_model_serializes_top_level_phase(phase_options, from_mapping):
+    values = {"rollout_id": "rollout", "task": {}, "policy": _policy(), **phase_options}
+    body = RolloutRequest(values) if from_mapping else RolloutRequest(**values)
+    payload = body.as_dict()
+    phase = phase_options.get("phase")
+    if phase is not None or (from_mapping and "phase" in phase_options):
+        assert payload["phase"] == phase
+    else:
+        assert "phase" not in payload
+    assert "phase" not in payload["policy"]
+
+
 def _session(monkeypatch, sockets, limit=16, job_id="ftjob-test", **options):
     options.setdefault("protocol_version", None)
     credential = _Credential()
@@ -223,6 +270,19 @@ async def test_invalid_renderer_fails_before_credentials_connection_or_queued_ad
             )
     assert credential.calls == 0
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["", "validation", "TRAIN", 0, False, [], {}])
+async def test_shared_client_rejects_invalid_phase_before_connecting(monkeypatch, phase):
+    socket = _Socket()
+    session, credential, calls = _session(monkeypatch, [socket])
+    async with session:
+        with pytest.raises(ValueError, match="phase must be"):
+            await session.execute_rollout(task={}, policy=_policy(), phase=phase)
+    assert credential.calls == 0
+    assert not calls
+    assert socket.sent.empty()
 
 
 def test_request_limit_includes_prefix_header_and_payload():
@@ -534,8 +594,11 @@ async def test_server_draining_rejection_resubmits_only_rejected_id(monkeypatch)
     async with session:
         first = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="running"))
         await _sent(old)
-        rejected = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="rejected"))
+        rejected = asyncio.create_task(session.execute_rollout(
+            task={}, policy=_policy(), rollout_id="rejected", phase="eval"
+        ))
         original = await _sent(old)
+        assert json.loads(original[1])["phase"] == "eval"
         old.incoming.put_nowait(_frame("error", "rejected", {
             "code": "ServerDraining", "message": "Not admitted", "retryable": True,
         }))
@@ -1735,7 +1798,14 @@ async def test_loopback_shared_socket_multiplexes_twenty_calls_and_closes(monkey
                     with pytest.raises(TimeoutError):
                         await asyncio.wait_for(socket.recv(), timeout=0.05)
                 for header, payload in reversed(batch):
-                    assert header.get("job_id") == json.loads(payload).get("job_id") == identifier
+                    body = json.loads(payload)
+                    assert header.get("job_id") == body.get("job_id") == identifier
+                    phase = ("train", "eval", None)[body["task"]["row"] % 3]
+                    if phase is None:
+                        assert "phase" not in body
+                    else:
+                        assert body["phase"] == phase
+                    assert "phase" not in body["policy"]
                     rollout_id = header["rollout_id"]
                     await socket.send(_frame("progress", rollout_id, {"stage": "running"}))
                     await socket.send(_frame("completed", rollout_id, {"rollout_id": rollout_id, "reward": 1.0}))
@@ -1755,6 +1825,7 @@ async def test_loopback_shared_socket_multiplexes_twenty_calls_and_closes(monkey
                             session.execute_rollout(
                                 task={"row": index},
                                 policy=_policy(),
+                                phase=("train", "eval", None)[index % 3],
                                 rollout_id=str(index),
                                 progress_callback=progress.append,
                                 max_response_bytes=10 * 1024 * 1024,

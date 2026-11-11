@@ -30,6 +30,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Literal,
     Mapping,
     Optional,
     Sequence,
@@ -1562,6 +1563,7 @@ class RLEOperations:
         policy: RolloutPolicy,
         sampling: Optional[SamplingOptions] = None,
         harness: Optional[HarnessConfiguration] = None,
+        phase: Literal["train", "eval"] | None = None,
         rollout_id: Optional[str] = None,
         forwarded_token: Optional[str] = None,
         **kwargs: Any,
@@ -1601,6 +1603,9 @@ class RLEOperations:
         :keyword harness: Callable target for this rollout only, for example a BYOH agent URL.
          Optional; the environment version's stored harness is used when omitted.
         :paramtype harness: ~azure.ai.projects.rle.HarnessConfiguration or None
+        :keyword phase: Optional rollout phase, "train" or "eval". Omitted when None so the service
+         applies its default.
+        :paramtype phase: str or None
         :keyword rollout_id: Caller-supplied identifier, reserved within the project and returned
          unchanged. A bare-hex UUID is generated when omitted.
         :paramtype rollout_id: str or None
@@ -1622,6 +1627,7 @@ class RLEOperations:
             policy=policy,
             sampling=sampling,
             harness=harness,
+            phase=phase,
             rollout_id=rollout_id,
         )
         validate_rollout_model_renderer(body)

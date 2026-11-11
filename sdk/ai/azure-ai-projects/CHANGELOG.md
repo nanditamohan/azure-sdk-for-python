@@ -4,6 +4,8 @@
 
 ### Features Added
 
+* Added optional top-level `phase="train"` or `phase="eval"` to Execute Rollout requests on synchronous/asynchronous HTTP operations and the shared async rollout client. Omitted or `None` phases remain absent from the request; invalid values are rejected before submission.
+* Preserve explicit boolean terminal retry hints on legacy WebSocket `RLERolloutError.retryable`. Missing/nonboolean hints, queued dependency causes and unknown outcomes remain nonretryable; no automatic execution replay is added.
 * Added optional per-rollout `max_completion_tokens`, `temperature`, `top_p`, `top_k`, and `seed` defaults to `rle.SamplingOptions`. Explicit model requests override these defaults; service/provider limits still apply, and training capture requires neutral top-p/top-k.
 
 ### Breaking Changes

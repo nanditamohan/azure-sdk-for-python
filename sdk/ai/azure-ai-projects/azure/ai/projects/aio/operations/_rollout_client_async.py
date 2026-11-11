@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Optional
 from urllib.parse import quote
 
 from azure.core.exceptions import ServiceRequestError, ServiceResponseError
@@ -494,6 +494,7 @@ class AsyncRolloutClient:
         policy: RolloutPolicy,
         sampling: Optional[SamplingOptions] = None,
         harness: Optional[HarnessConfiguration] = None,
+        phase: Literal["train", "eval"] | None = None,
         rollout_id: Optional[str] = None,
         timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -523,6 +524,9 @@ class AsyncRolloutClient:
         :paramtype sampling: ~azure.ai.projects.rle.SamplingOptions or None
         :keyword harness: Optional per-request harness override.
         :paramtype harness: ~azure.ai.projects.rle.HarnessConfiguration or None
+        :keyword phase: Optional rollout phase, "train" or "eval". Omitted when None so the service
+         applies its default.
+        :paramtype phase: str or None
         :keyword rollout_id: Optional original identifier; generated when omitted.
         :paramtype rollout_id: str or None
         :keyword timeout: Post-admission timeout in seconds. Default 1860.
@@ -542,7 +546,7 @@ class AsyncRolloutClient:
         validate_rollout_options(timeout, max_response_bytes)
         body = build_rollout_body(
             task=task, policy=policy, sampling=sampling, rollout_id=rollout_id, job_id=self._job_id,
-            harness=harness,
+            harness=harness, phase=phase,
         )
         self._check()
         await asyncio.to_thread(validate_rollout_model_renderer, body)
