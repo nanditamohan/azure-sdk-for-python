@@ -208,15 +208,22 @@ async def test_v4_get_does_not_block_other_completions(monkeypatch):
 async def test_v4_invalid_completions_never_fetch_or_reexecute(monkeypatch, payload):
     socket = _V4Socket()
     session, _, _ = _queued_session(monkeypatch, [socket], protocol_version="v4")
-    requests, _ = _result_pipeline(session, lambda _: (200, {}))
+    requests, _ = _result_pipeline(session, lambda request: (200, _result(request.url.split("/")[-2])))
     async with session:
-        call = _call(session)
+        call, healthy = _call(session), _call(session)
         header, _ = await _sent(socket)
+        sibling, _ = await _sent(socket)
         socket.incoming.put_nowait(_frame("completed", header["rollout_id"], payload))
         with pytest.raises(RLERolloutError) as caught:
-            await call
+            await asyncio.wait_for(call, 2)
         assert caught.value.code == "InvalidRolloutFrame"
+        assert caught.value.rollout_id == header["rollout_id"]
         assert not requests
+        assert not healthy.done()
+        socket.incoming.put_nowait(_frame("completed", sibling["rollout_id"], _completion()))
+        assert (await asyncio.wait_for(healthy, 2)).rollout_id == sibling["rollout_id"]
+        assert len(requests) == 1
+        assert not socket.closed
 
 
 @pytest.mark.asyncio

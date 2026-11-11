@@ -694,6 +694,16 @@ such as traceback are discarded. Treat the reason as customer content: do not
 log it to shared telemetry. Nested cause retryability describes the dependency;
 it does not authorize replaying a terminal rollout.
 
+Malformed optional causes are omitted with a safe validation warning; the original
+bounded terminal reason, queue-level error code and execution identifiers are
+preserved. Payload-validation failures with trustworthy rollout correlation affect
+only that call and do not interrupt unrelated pending or future calls. Late events
+for locally detached calls are ignored. Validation warnings contain a fixed
+category and the validated rollout ID, never payloads, terminal reasons,
+credentials or trajectories. Invalid outer framing or conflicting correlation
+still uses the existing connection-level error handling; this isolation does not
+relax the structured-cause schema or add execution replay.
+
 V4 uses the same durable execution as V3, but every `completed` event contains
 only the durable event identity and `result_available: true`, never a graph or
 result reference. The SDK automatically calls

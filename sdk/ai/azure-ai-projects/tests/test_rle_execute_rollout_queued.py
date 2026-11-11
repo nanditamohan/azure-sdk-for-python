@@ -476,35 +476,49 @@ async def test_failure_cause_is_forward_compatible_but_does_not_expose_extra_fie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protocol_version", ["v3", "v4"])
+@pytest.mark.parametrize("reconnect", [False, True])
 @pytest.mark.parametrize(
-    "cause,message",
+    "cause",
     [
-        ({}, "reason"),
-        ({"code": "GraderFailed", "dependency": "grader", "operation": "grading", "retryable": 1}, "reason"),
-        ({"code": "unsafe\ncode", "dependency": "grader", "operation": "grading", "retryable": False}, "reason"),
-        (
-            {
-                "code": "GraderFailed",
-                "dependency": "grader",
-                "operation": "grading",
-                "retryable": False,
-                "error_type": ["KeyError"],
-            },
-            "reason",
-        ),
-        ({"code": "GraderFailed", "dependency": "grader", "operation": "grading", "retryable": False}, "x" * 4097),
+        {},
+        {"code": "GraderFailed", "dependency": "grader", "operation": "grading", "retryable": 1},
+        {"code": "unsafe\ncode-secret", "dependency": "grader", "operation": "grading", "retryable": False},
+        {
+            "code": "GraderFailed",
+            "dependency": "grader",
+            "operation": "grading",
+            "retryable": False,
+            "error_type": ["cause-secret"],
+        },
+        {"code": "EnvironmentExecutionFailed", "dependency": None, "operation": "execution", "retryable": False},
+        {"code": "EnvironmentExecutionFailed", "dependency": "environment", "operation": None, "retryable": False},
+        {"code": "EnvironmentExecutionFailed", "retryable": False},
+        ["cause-secret"],
     ],
 )
-async def test_malformed_structured_failure_is_a_protocol_error(monkeypatch, cause, message):
-    socket = _QueuedSocket()
-    session, _, _ = _queued_session(monkeypatch, [socket])
-    async with session:
-        call = _call(session)
-        header, _ = await _sent(socket)
-        socket.incoming.put_nowait(
+async def test_malformed_optional_cause_preserves_terminal_error_and_siblings(
+    monkeypatch, protocol_version, reconnect, cause, caplog
+):
+    caplog.set_level(logging.DEBUG, logger=queued.__name__)
+    async with _running(
+        monkeypatch, protocols=("rle.execute-rollout." + protocol_version,), protocol_version=protocol_version
+    ) as run:
+        requests, _ = _result_pipeline(run.session, lambda request: (200, _result(request.url.split("/")[-2])))
+        failed, healthy = _call(run.session), _call(run.session)
+        socket, header, _ = await _command(run)
+        _, sibling, _ = await _command(run)
+        rollout_id = header["rollout_id"]
+        if reconnect:
+            await socket.close()
+            socket, attached, _ = await _command(run, "attach")
+            _, sibling_attached, _ = await _command(run, "attach")
+            assert {attached["rollout_id"], sibling_attached["rollout_id"]} == {rollout_id, sibling["rollout_id"]}
+        message = "Original terminal reason-secret."
+        await socket.send(
             _frame(
                 "failed",
-                header["rollout_id"],
+                rollout_id,
                 {
                     "code": "queued_execution_failed",
                     "message": message,
@@ -516,9 +530,212 @@ async def test_malformed_structured_failure_is_a_protocol_error(monkeypatch, cau
             )
         )
         with pytest.raises(RLERolloutError) as caught:
-            await call
-        assert caught.value.code == "InvalidRolloutFrame"
+            await asyncio.wait_for(failed, 2)
+        assert caught.value.code == "queued_execution_failed"
+        assert caught.value.service_message == message
+        assert caught.value.rollout_id == rollout_id
+        assert caught.value.sequence == 1
+        assert caught.value.attempt_id == "attempt"
         assert caught.value.cause is None
+        assert caught.value.retryable is False
+        assert not healthy.done()
+        terminal = (
+            {"sequence": 1, "attempt_id": "attempt", "result_available": True}
+            if protocol_version == "v4"
+            else _terminal(sibling["rollout_id"])
+        )
+        await socket.send(_frame("completed", sibling["rollout_id"], terminal))
+        assert (await asyncio.wait_for(healthy, 2)).rollout_id == sibling["rollout_id"]
+        assert len(requests) == (1 if protocol_version == "v4" else 0)
+        assert len(run.requests) == (2 if reconnect else 1)
+        assert "category=failure_cause" in caplog.text
+        assert rollout_id in caplog.text
+        assert "secret" not in caplog.text
+        assert "task-secret" not in caplog.text
+        with pytest.raises(ValueError, match="Invalid queued failure cause"):
+            queued._failure_cause(cause)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol_version", ["v3", "v4"])
+@pytest.mark.parametrize(
+    "message,valid",
+    [
+        pytest.param("x" * 4096, True, id="ascii-at-limit"),
+        pytest.param("\u00e9" * 2048, True, id="utf8-at-limit"),
+        pytest.param("\u00e9" * 2048 + "x", False, id="utf8-over-limit"),
+        pytest.param("\ud800", False, id="invalid-utf8"),
+    ],
+)
+async def test_malformed_optional_cause_does_not_bypass_terminal_reason_limits(
+    monkeypatch, protocol_version, message, valid, caplog
+):
+    caplog.set_level(logging.DEBUG, logger=queued.__name__)
+    socket = _QueuedSocket()
+    socket.subprotocol = "rle.execute-rollout." + protocol_version
+    session, _, _ = _queued_session(monkeypatch, [socket], protocol_version=protocol_version)
+    async with session:
+        call = _call(session)
+        header, _ = await _sent(socket)
+        socket.incoming.put_nowait(
+            _frame(
+                "failed",
+                header["rollout_id"],
+                {
+                    "sequence": 1,
+                    "attempt_id": "attempt",
+                    "code": "queued_execution_failed",
+                    "message": message,
+                    "retryable": False,
+                    "cause": {"private": "cause-secret"},
+                },
+            )
+        )
+        with pytest.raises(RLERolloutError) as caught:
+            await asyncio.wait_for(call, 2)
+        assert caught.value.code == ("queued_execution_failed" if valid else "InvalidRolloutFrame")
+        assert caught.value.cause is None
+        assert caught.value.retryable is False
+        assert caught.value.rollout_id == header["rollout_id"]
+        if valid:
+            assert caught.value.service_message == message
+        assert message not in caplog.text
+        assert "secret" not in caplog.text
+        assert not socket.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol_version", ["v3", "v4"])
+@pytest.mark.parametrize(
+    "kind,payload,category",
+    [
+        ("progress", b'{"progress":', "payload_json"),
+        ("progress", b"\xff", "payload_json"),
+        ("progress", b'{"progress":{},"progress":{}}', "payload_json"),
+        ("progress", b'{"progress":NaN}', "payload_json"),
+        pytest.param(
+            "progress",
+            b'{"progress":' + b"[" * 10000 + b"0" + b"]" * 10000 + b"}",
+            "payload_json",
+            id="deep-json",
+        ),
+        ("progress", [1], "payload_json"),
+        ("mystery-secret", {}, "event_type"),
+        ("accepted", {"phase": "running"}, "acceptance"),
+        ("accepted", {"phase": "queued", "attempt_id": "attempt"}, "acceptance"),
+        ("state", {"phase": "state-secret"}, "state"),
+        ("progress", {}, "event_identity"),
+        ("progress", {"sequence": None, "attempt_id": "attempt", "progress": {}}, "sequence"),
+        ("progress", {"sequence": -1, "attempt_id": "attempt", "progress": {}}, "sequence"),
+        ("progress", {"sequence": True, "attempt_id": "attempt", "progress": {}}, "sequence"),
+        ("progress", {"sequence": 0, "attempt_id": None, "progress": {}}, "attempt"),
+        ("progress", {"sequence": 0, "attempt_id": [], "progress": {}}, "attempt"),
+        ("progress", {"sequence": 0, "attempt_id": "attempt", "progress": []}, "progress"),
+        ("error", {"code": "error-secret", "message": 1, "retryable": False}, "terminal_error"),
+        ("error", {"code": "error-secret", "message": "reason-secret", "retryable": 1}, "terminal_error"),
+        (
+            "failed",
+            {
+                "sequence": 1,
+                "attempt_id": "attempt",
+                "code": "error-secret",
+                "message": "reason-secret",
+                "retryable": True,
+            },
+            "terminal_error",
+        ),
+        (
+            "failed",
+            {
+                "sequence": 1,
+                "attempt_id": "attempt",
+                "code": "queued_execution_failed",
+                "message": "x" * 4097,
+                "retryable": False,
+                "cause": {"code": "GraderFailed", "dependency": "grader", "operation": "grading", "retryable": False},
+            },
+            "failure_message_size",
+        ),
+    ],
+)
+async def test_correlated_validation_fault_does_not_fail_siblings_or_block_new_work(
+    monkeypatch, protocol_version, kind, payload, category, caplog
+):
+    caplog.set_level(logging.DEBUG, logger=queued.__name__)
+    async with _running(
+        monkeypatch, protocols=("rle.execute-rollout." + protocol_version,), protocol_version=protocol_version
+    ) as run:
+        requests, _ = _result_pipeline(run.session, lambda request: (200, _result(request.url.split("/")[-2])))
+        failed, healthy = _call(run.session), _call(run.session)
+        socket, header, _ = await _command(run)
+        _, sibling, _ = await _command(run)
+        rollout_id = header["rollout_id"]
+        message = _frame(kind, rollout_id, payload if not isinstance(payload, bytes) else {})
+        if isinstance(payload, bytes):
+            message = message[:-2] + payload
+        await socket.send(message)
+        with pytest.raises(RLERolloutError) as caught:
+            await asyncio.wait_for(failed, 2)
+        assert caught.value.code == "InvalidRolloutFrame"
+        assert caught.value.rollout_id == rollout_id
+        assert caught.value.retryable is False
+        assert not healthy.done()
+
+        async def complete(call, call_id):
+            terminal = (
+                {"sequence": 1, "attempt_id": "attempt", "result_available": True}
+                if protocol_version == "v4"
+                else _terminal(call_id)
+            )
+            await socket.send(_frame("completed", call_id, terminal))
+            assert (await asyncio.wait_for(call, 2)).rollout_id == call_id
+
+        await complete(healthy, sibling["rollout_id"])
+        next_call = _call(run.session)
+        _, next_header, _ = await _command(run)
+        assert next_header["type"] == "execute"
+        assert next_header["rollout_id"] not in (rollout_id, sibling["rollout_id"])
+        await complete(next_call, next_header["rollout_id"])
+        assert len(requests) == (2 if protocol_version == "v4" else 0)
+        assert len(run.requests) == 1
+        assert f"category={category}" in caplog.text
+        assert rollout_id in caplog.text
+        assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol_version", ["v3", "v4"])
+async def test_malformed_late_payloads_do_not_affect_completed_or_pending_calls(monkeypatch, protocol_version, caplog):
+    caplog.set_level(logging.DEBUG, logger=queued.__name__)
+    async with _running(
+        monkeypatch, protocols=("rle.execute-rollout." + protocol_version,), protocol_version=protocol_version
+    ) as run:
+        _result_pipeline(run.session, lambda request: (200, _result(request.url.split("/")[-2])))
+        completed, failed, healthy = _call(run.session), _call(run.session), _call(run.session)
+        socket, first, _ = await _command(run)
+        _, second, _ = await _command(run)
+        _, third, _ = await _command(run)
+
+        def terminal(rollout_id):
+            return (
+                {"sequence": 1, "attempt_id": "attempt", "result_available": True}
+                if protocol_version == "v4"
+                else _terminal(rollout_id)
+            )
+
+        await socket.send(_frame("completed", first["rollout_id"], terminal(first["rollout_id"])))
+        first_result = await asyncio.wait_for(completed, 2)
+        await socket.send(_frame("progress", second["rollout_id"], {}))
+        with pytest.raises(RLERolloutError, match="InvalidRolloutFrame"):
+            await asyncio.wait_for(failed, 2)
+        for rollout_id in (first["rollout_id"], second["rollout_id"], "0" * 32):
+            await socket.send(_frame("progress", rollout_id)[:-1])
+        await socket.send(_frame("completed", third["rollout_id"], terminal(third["rollout_id"])))
+        assert (await asyncio.wait_for(healthy, 2)).rollout_id == third["rollout_id"]
+        assert completed.result() is first_result
+        assert first_result.rollout_id == first["rollout_id"]
+        assert len(run.requests) == 1
+        assert caplog.text.count("Queued rollout validation failed:") == 1
 
 
 @pytest.mark.asyncio

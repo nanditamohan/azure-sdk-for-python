@@ -14,6 +14,7 @@
 
 ### Bugs Fixed
 
+* Isolate queued V3/V4 payload-validation failures to the rollout identified by a valid frame header, without failing unrelated pending calls or blocking new submissions. Malformed optional structured causes are omitted with a content-free validation diagnostic while preserving the original bounded terminal error. Structured-cause schema rules and connection-level framing/correlation recovery are unchanged.
 * Validate Loom model/renderer combinations against the CLI's published catalog before HTTP, WebSocket, or queued rollout submission. Catalog downloads are bounded and cached for five minutes; unavailable catalogs produce an explicit warning and leave authoritative validation to the service. Foundry deployments are not checked against the Loom catalog.
 * Accept queued V3 result references whose Foundry workspace names contain encoded `@` characters (`%40`). Completed rollouts can retrieve their full results without `InvalidRolloutResultReference`, retaining original-project authentication, rollout-ID checks and rejection of other encoded characters.
 

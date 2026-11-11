@@ -137,6 +137,10 @@ def _command(kind: str, rollout_id: str, job_id: Optional[str], payload: Mapping
     return struct.pack(">I", len(encoded)) + encoded + json.dumps(payload, separators=(",", ":")).encode()
 
 
+class _EventValidationError(ValueError):
+    """An event validation failure with a fixed, content-free category."""
+
+
 class _Pending:
     def __init__(
         self,
@@ -288,33 +292,52 @@ class _QueuedRolloutClient:
     async def _receive(self) -> None:
         while True:
             header, raw = deserialize_rollout_frame(await self._socket.recv(), DEFAULT_MAX_RESPONSE_BYTES)
-            payload = _object(raw)
-            self._dispatch(header, payload, len(raw))
+            self._dispatch(header, raw)
             self._healthy = True
 
-    def _dispatch(self, header: Mapping[str, Any], payload: dict[str, Any], size: int) -> None:
+    def _dispatch(self, header: Mapping[str, Any], raw: bytes) -> None:
         rollout_id = header.get("rollout_id")
         kind = header.get("type")
         if not isinstance(rollout_id, str) or re.fullmatch(r"[0-9a-f]{32}", rollout_id) is None:
             raise ValueError("Invalid rollout correlation.")
-        if kind not in ("accepted", "state", "progress", "completed", "failed", "error"):
-            raise ValueError("Unknown queued frame type.")
-        if payload.get("rollout_id", rollout_id) != rollout_id:
-            raise ValueError("Conflicting rollout correlation.")
         pending = self._pending.get(rollout_id)
         if pending is None or pending.future.done():
             return  # A late frame after local detach is not a new execution.
-        if size > pending.limit:
+        if len(raw) > pending.limit:
             pending.future.set_exception(_error("RolloutResponseTooLarge", rollout_id))
             return
+        try:
+            payload = _object(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            self._reject_event(rollout_id, pending, "payload_json")
+            return
+        if payload.get("rollout_id", rollout_id) != rollout_id:
+            raise ValueError("Conflicting rollout correlation.")
+        try:
+            self._dispatch_event(rollout_id, pending, kind, payload)
+        except _EventValidationError as exc:
+            self._reject_event(rollout_id, pending, str(exc))
+        except (ValueError, UnicodeError, RecursionError):
+            self._reject_event(rollout_id, pending, "event_payload")
+
+    def _reject_event(self, rollout_id: str, pending: _Pending, category: str) -> None:
+        _LOGGER.warning(
+            "Queued rollout validation failed: category=%(category)s rollout_id=%(rollout_id)s.",
+            {"category": category, "rollout_id": rollout_id},
+        )
+        pending.future.set_exception(_error("InvalidRolloutFrame", rollout_id))
+
+    def _dispatch_event(self, rollout_id: str, pending: _Pending, kind: Any, payload: dict[str, Any]) -> None:
+        if kind not in ("accepted", "state", "progress", "completed", "failed", "error"):
+            raise _EventValidationError("event_type")
         if kind in ("progress", "completed", "failed"):
             sequence = payload.get("sequence")
             attempt = payload.get("attempt_id")
             if "sequence" not in payload or "attempt_id" not in payload:
-                raise ValueError("Missing durable event identity.")
+                raise _EventValidationError("event_identity")
             if sequence is None:
                 if kind != "failed":
-                    raise ValueError("Missing durable sequence.")
+                    raise _EventValidationError("sequence")
             elif (
                 type(sequence) is not int
                 or not 0 <= sequence <= 2**63 - 1
@@ -323,22 +346,22 @@ class _QueuedRolloutClient:
                     and (sequence < pending.sequence or (kind == "progress" and sequence == pending.sequence))
                 )
             ):
-                raise ValueError("Invalid durable sequence.")
+                raise _EventValidationError("sequence")
             if attempt is not None and (not isinstance(attempt, str) or not attempt or len(attempt) > 128):
-                raise ValueError("Invalid durable attempt.")
+                raise _EventValidationError("attempt")
             if kind in ("progress", "completed") and attempt is None:
-                raise ValueError("Missing durable attempt.")
+                raise _EventValidationError("attempt")
             pending.sequence = sequence if sequence is not None else pending.sequence
         if kind == "accepted":
             if payload.get("phase") != "queued" or payload.get("attempt_id") is not None:
-                raise ValueError("Invalid acceptance.")
+                raise _EventValidationError("acceptance")
         elif kind == "state":
             if payload.get("phase") not in ("queued", "running", "finalizing", "completed", "failed"):
-                raise ValueError("Invalid queued state.")
+                raise _EventValidationError("state")
             # latest_sequence and echoed last_sequence are NOT received event cursors.
         elif kind == "progress":
             if not isinstance(payload.get("progress"), dict):
-                raise ValueError("Invalid durable progress.")
+                raise _EventValidationError("progress")
             if pending.callback is not None:
                 try:
                     pending.callback(
@@ -355,7 +378,7 @@ class _QueuedRolloutClient:
             if self._completion_only and (
                 payload.get("result_available") is not True or "result" in payload or "result_url" in payload
             ):
-                raise ValueError("Invalid V4 completion notification.")
+                raise _EventValidationError("completion")
             pending.future.set_result(payload)
         elif kind in ("failed", "error"):
             code = payload.get("code")
@@ -365,12 +388,20 @@ class _QueuedRolloutClient:
                 or not isinstance(payload.get("retryable"), bool)
                 or (kind == "failed" and payload["retryable"])
             ):
-                raise ValueError("Invalid queued error.")
-            cause = _failure_cause(payload.get("cause")) if kind == "failed" else None
-            if cause is not None:
+                raise _EventValidationError("terminal_error")
+            if kind == "failed" and payload.get("cause") is not None:
                 message = payload["message"]
                 if len(message.encode("utf-8")) > 4096:
-                    raise ValueError("Queued failure message exceeded the limit.")
+                    raise _EventValidationError("failure_message_size")
+                try:
+                    cause = _failure_cause(payload["cause"])
+                except ValueError:
+                    _LOGGER.warning(
+                        "Queued rollout validation failed: category=failure_cause rollout_id=%s; "
+                        "preserving the terminal error without optional cause metadata.",
+                        rollout_id,
+                    )
+                    cause = None
                 pending.future.set_exception(
                     RLERolloutError(
                         None,
@@ -383,7 +414,9 @@ class _QueuedRolloutClient:
                     )
                 )
             else:
-                pending.future.set_exception(_error(code if code in _SERVICE_CODES else "QueuedRolloutFailed", rollout_id))
+                pending.future.set_exception(
+                    _error(code if code in _SERVICE_CODES else "QueuedRolloutFailed", rollout_id)
+                )
 
     async def _drop(self, receive: Optional[asyncio.Task]) -> None:
         if receive is not None:
