@@ -1288,7 +1288,7 @@ class RLEOperations:
         for V3 or explicitly pass ``None`` for legacy v2/v1 negotiation.
         The following drain/HTTP recovery behavior applies to legacy sessions only.
 
-        The SDK manages admission for up to 32 concurrent rollouts per client,
+        The SDK manages admission for up to 64 concurrent rollouts per client,
         with no public concurrency override. The session owns one active submission socket. Draining
         sockets retain pending results while new work opens a replacement.
         Its per-call timeout

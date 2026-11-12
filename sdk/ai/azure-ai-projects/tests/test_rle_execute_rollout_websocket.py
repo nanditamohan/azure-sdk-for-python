@@ -467,7 +467,7 @@ async def test_optional_job_id_is_preserved_across_connections(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_factory", [False, True])
-async def test_sdk_managed_concurrency_admits_32_rollouts_and_queues_the_next(monkeypatch, use_factory):
+async def test_sdk_managed_concurrency_admits_64_rollouts_and_queues_the_next(monkeypatch, use_factory):
     socket = _Socket()
 
     async def connect(*_args, **_kwargs):
@@ -486,10 +486,10 @@ async def test_sdk_managed_concurrency_admits_32_rollouts_and_queues_the_next(mo
         async with session:
             tasks = [
                 asyncio.create_task(session.execute_rollout(task={"row": index}, policy=_policy()))
-                for index in range(33)
+                for index in range(65)
             ]
             try:
-                batch = [await _sent(socket) for _ in range(32)]
+                batch = [await _sent(socket) for _ in range(64)]
                 await asyncio.sleep(0.01)
                 assert socket.sent.empty()
                 assert not any(task.done() for task in tasks)
@@ -499,7 +499,7 @@ async def test_sdk_managed_concurrency_admits_32_rollouts_and_queues_the_next(mo
                 for header, _ in batch[1:]:
                     _complete(socket, header["rollout_id"])
                 _complete(socket, last_header["rollout_id"])
-                assert len(await asyncio.gather(*tasks)) == 33
+                assert len(await asyncio.gather(*tasks)) == 65
             finally:
                 for task in tasks:
                     if not task.done():
@@ -1154,9 +1154,9 @@ async def test_cancelling_one_shared_lookup_does_not_delay_sibling_completion(mo
 
 
 @pytest.mark.asyncio
-async def test_recovering_rollouts_keep_all_32_admission_slots(monkeypatch):
+async def test_recovering_rollouts_keep_all_64_admission_slots(monkeypatch):
     old, new = _Socket(), _Socket()
-    session, _, calls = _session(monkeypatch, [old, new], limit=32)
+    session, _, calls = _session(monkeypatch, [old, new], limit=64)
     release = asyncio.Event()
     polling = asyncio.Event()
     count = 0
@@ -1165,7 +1165,7 @@ async def test_recovering_rollouts_keep_all_32_admission_slots(monkeypatch):
         nonlocal count
         if not urlsplit(request.url).path.endswith("/result"):
             count += 1
-            if count == 32:
+            if count == 64:
                 polling.set()
             await release.wait()
         return _completed_recovery(request)
@@ -1174,9 +1174,9 @@ async def test_recovering_rollouts_keep_all_32_admission_slots(monkeypatch):
     async with session:
         tasks = [
             asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id=str(i)))
-            for i in range(32)
+            for i in range(64)
         ]
-        for _ in range(32):
+        for _ in range(64):
             await _sent(old)
         queued = asyncio.create_task(session.execute_rollout(task={}, policy=_policy(), rollout_id="queued"))
         old.incoming.put_nowait(OSError("disconnected"))
@@ -1187,7 +1187,7 @@ async def test_recovering_rollouts_keep_all_32_admission_slots(monkeypatch):
         assert (await _sent(new))[0]["rollout_id"] == "queued"
         _complete(new, "queued")
         results = await asyncio.gather(*tasks, queued)
-        assert len(results) == 33 and len(calls) == 2
+        assert len(results) == 65 and len(calls) == 2
         assert not session._uncertain and not session._pending_ids
 
 

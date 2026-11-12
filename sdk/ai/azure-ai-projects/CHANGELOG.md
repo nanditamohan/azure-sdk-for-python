@@ -4,6 +4,7 @@
 
 ### Features Added
 
+* Increase shared rollout client admission from 32 to 64 concurrent calls and the default post-admission rollout timeout from 1860 to 5400 seconds (90 minutes). Explicit per-call timeouts remain supported; reconnects and result downloads retain the original deadline.
 * Added optional top-level `phase="train"` or `phase="eval"` to Execute Rollout requests on synchronous/asynchronous HTTP operations and the shared async rollout client. Omitted or `None` phases remain absent from the request; invalid values are rejected before submission.
 * Preserve explicit boolean terminal retry hints on legacy WebSocket `RLERolloutError.retryable`. Missing/nonboolean hints, queued dependency causes and unknown outcomes remain nonretryable; no automatic execution replay is added.
 * Added optional per-rollout `max_completion_tokens`, `temperature`, `top_p`, `top_k`, and `seed` defaults to `rle.SamplingOptions`. Explicit model requests override these defaults; service/provider limits still apply, and training capture requires neutral top-p/top-k.

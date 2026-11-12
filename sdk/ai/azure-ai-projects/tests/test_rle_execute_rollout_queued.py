@@ -192,16 +192,35 @@ async def test_public_factory_rejects_unsafe_job_ids_before_credentials_or_conne
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protocol_version", ["v3", "v4"])
+@pytest.mark.parametrize("timeout", [None, 23])
+async def test_rollout_deadline_defaults_to_ninety_minutes_and_honors_override(monkeypatch, protocol_version, timeout):
+    protocol = f"rle.execute-rollout.{protocol_version}"
+    async with _running(monkeypatch, protocols=(protocol,), protocol_version=protocol_version) as run:
+        started = time.monotonic()
+        call = _call(run.session, **({} if timeout is None else {"timeout": timeout}))
+        socket, header, _ = await _command(run)
+        pending = run.session._queued._pending[header["rollout_id"]]
+        budget = 5400 if timeout is None else timeout
+        assert started + budget <= pending.deadline <= time.monotonic() + budget
+        await socket.send(_frame("failed", header["rollout_id"], {
+            "sequence": 1, "attempt_id": "attempt-1", "reason": "queued_execution_failed",
+        }))
+        with pytest.raises(RLERolloutError):
+            await call
+
+
+@pytest.mark.asyncio
 async def test_real_v3_handshake_multiplexing_admission_and_typed_capture(monkeypatch, caplog):
     caplog.set_level(logging.DEBUG)
     async with _running(monkeypatch) as run:
         assert run.user.calls == run.finetune.calls == 0
-        calls = [_call(run.session, harness=HarnessConfiguration(type="gym")) for _ in range(64)]
+        calls = [_call(run.session, harness=HarnessConfiguration(type="gym")) for _ in range(128)]
         for _ in range(2):
-            batch = [await _command(run) for _ in range(32)]
+            batch = [await _command(run) for _ in range(64)]
             await asyncio.sleep(0.02)
             assert run.commands.empty()
-            assert len(run.session._queued._pending) == 32
+            assert len(run.session._queued._pending) == 64
             assert len(run.requests) == 1
             for socket, header, body in reversed(batch):
                 rollout_id = header["rollout_id"]

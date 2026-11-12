@@ -44,7 +44,7 @@ from ...operations._patch_rle_rollout import (
 from ...rle._rollout_models import HarnessConfiguration, RolloutPolicy, RolloutResult, SamplingOptions
 
 _LOGGER = logging.getLogger(__name__)
-_MAX_CONCURRENT_ROLLOUTS = 32
+_MAX_CONCURRENT_ROLLOUTS = 64
 _RECOVERY_API_VERSION = "2025-05-01"
 _RECOVERY_POLL_INTERVAL = 30
 _RECOVERY_RETRY_STATUSES = frozenset({404, 408, 429, 500, 502, 503, 504})
@@ -500,7 +500,7 @@ class AsyncRolloutClient:
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
         max_response_bytes: Optional[int] = None,
     ) -> RolloutResult:
-        """Execute with a default 1860-second timeout starting after SDK admission.
+        """Execute with a default 5400-second timeout starting after SDK admission.
 
         V3 and default V4 sessions wait through durable acceptance and worker retries,
         then return the full typed result. Disconnection resumes by attachment with
@@ -529,7 +529,7 @@ class AsyncRolloutClient:
         :paramtype phase: str or None
         :keyword rollout_id: Optional original identifier; generated when omitted.
         :paramtype rollout_id: str or None
-        :keyword timeout: Post-admission timeout in seconds. Default 1860.
+        :keyword timeout: Post-admission timeout in seconds. Default 5400 (90 minutes).
         :paramtype timeout: float
         :keyword progress_callback: Lightweight synchronous callback receiving correlated progress.
         :paramtype progress_callback: callable or None

@@ -41,7 +41,7 @@ from ..rle._rollout_models import (
 # version it was shipped under keeps a client-wide api_version override from silently moving it.
 EXECUTE_ROLLOUT_API_VERSION = "2025-11-15-preview"
 EXECUTE_ROLLOUT_SUBPROTOCOLS = ("rle.execute-rollout.v2", "rle.execute-rollout.v1")
-DEFAULT_ROLLOUT_TIMEOUT_S = 1860.0
+DEFAULT_ROLLOUT_TIMEOUT_S = 5400.0
 DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 # The classic AzureML forwarded-user-token header. RLE requires it in addition to

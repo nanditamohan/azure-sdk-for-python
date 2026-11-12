@@ -483,7 +483,7 @@ async with project_client.rle.get_rollout_client(
                 policy=policy,
                 phase="train",
                 harness=HarnessConfiguration(type="gym"),
-                timeout=1860,
+                timeout=5400,
                 max_response_bytes=32 * 1024 * 1024,
             )
             for task in tasks
@@ -521,7 +521,7 @@ header and payload, with a separate 4 KiB header limit. Oversized requests fail
 locally before submission and do not interrupt other pending rollouts.
 
 The SDK handles rollout concurrency internally and owns **one active submission socket**.
-Each client admits up to 32 concurrent rollouts; no public concurrency override is exposed.
+Each client admits up to 64 concurrent rollouts; no public concurrency override is exposed.
 Sends are serialized and one receive dispatcher
 correlates out-of-order results by rollout ID. `progress_callback`, if supplied, receives
 a mapping containing `rollout_id`; it must be a lightweight synchronous callable.
@@ -606,8 +606,8 @@ recover. The backend may still be executing the unknown rollout; the SDK does no
 cancel or replay it. The concurrency limit bounds calls still tracked by the client,
 not backend executions whose outcomes have become unknown.
 WebSocket execution uses API version `2025-11-15-preview`.
-The default `timeout=1860` begins **after SDK concurrency admission**: queue waiting
-does not consume a rollout's timeout, so a large job is not given a job-wide 1860-second
+The default `timeout=5400` (90 minutes) begins **after SDK concurrency admission**: queue waiting
+does not consume a rollout's timeout, so a large job is not given a job-wide 5400-second
 deadline. Queue waiting remains cancellable and awakens promptly on closure or a
 session-level protocol failure, not an unrelated unknown rollout outcome.
 After admission, timeout includes renewal waiting, credentials,
@@ -660,7 +660,7 @@ async with project_client.rle.get_rollout_client(
         task=task,
         policy=policy,
         harness=HarnessConfiguration(type="gym"),
-        timeout=1860,
+        timeout=5400,
     )
 ```
 
@@ -728,7 +728,7 @@ The current service graph is available as `result.rollout_graph`; legacy
 `result.rollout` remains supported, and `result.sequences` reads either shape.
 
 One serialized command driver and an independent bounded receiver multiplex up to
-32 admitted logical calls. The original post-admission deadline and admission
+64 admitted logical calls. The original post-admission deadline and admission
 permit cover connection, execution, attachment recovery and complete result fetch.
 Queue waiting remains cancellable and wakes on close. On disconnect or credential
 rotation, submitted IDs are **attached**, never executed again, including after an
