@@ -495,6 +495,7 @@ class AsyncRolloutClient:
         sampling: Optional[SamplingOptions] = None,
         harness: Optional[HarnessConfiguration] = None,
         phase: Literal["train", "eval"] | None = None,
+        group_number: Optional[int] = None,
         rollout_id: Optional[str] = None,
         timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -527,6 +528,9 @@ class AsyncRolloutClient:
         :keyword phase: Optional rollout phase, "train" or "eval". Omitted when None so the service
          applies its default.
         :paramtype phase: str or None
+        :keyword group_number: Optional nonnegative, zero-based sampling group index shared by siblings.
+         Stored as rollout metadata, without changing model requests.
+        :paramtype group_number: int or None
         :keyword rollout_id: Optional original identifier; generated when omitted.
         :paramtype rollout_id: str or None
         :keyword timeout: Post-admission timeout in seconds. Default 5400 (90 minutes).
@@ -545,8 +549,14 @@ class AsyncRolloutClient:
             max_response_bytes = self._default_max_response_bytes
         validate_rollout_options(timeout, max_response_bytes)
         body = build_rollout_body(
-            task=task, policy=policy, sampling=sampling, rollout_id=rollout_id, job_id=self._job_id,
-            harness=harness, phase=phase,
+            task=task,
+            policy=policy,
+            sampling=sampling,
+            rollout_id=rollout_id,
+            job_id=self._job_id,
+            harness=harness,
+            phase=phase,
+            group_number=group_number,
         )
         self._check()
         await asyncio.to_thread(validate_rollout_model_renderer, body)

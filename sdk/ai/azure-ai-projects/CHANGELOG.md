@@ -4,6 +4,7 @@
 
 ### Features Added
 
+* Added optional top-level `group_number` to synchronous/asynchronous HTTP Execute Rollout and shared async rollout clients. Nonnegative 64-bit integers, including zero, are preserved; omitted/`None` values are not sent. Group metadata does not change policy or Capture Proxy requests.
 * Increase shared rollout client admission from 32 to 64 concurrent calls and the default post-admission rollout timeout from 1860 to 5400 seconds (90 minutes). Explicit per-call timeouts remain supported; reconnects and result downloads retain the original deadline.
 * Added optional top-level `phase="train"` or `phase="eval"` to Execute Rollout requests on synchronous/asynchronous HTTP operations and the shared async rollout client. Omitted or `None` phases remain absent from the request; invalid values are rejected before submission.
 * Preserve explicit boolean terminal retry hints on legacy WebSocket `RLERolloutError.retryable`. Missing/nonboolean hints, queued dependency causes and unknown outcomes remain nonretryable; no automatic execution replay is added.

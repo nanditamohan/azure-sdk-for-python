@@ -1347,6 +1347,7 @@ class RLEOperations:
         sampling: Optional[SamplingOptions] = None,
         harness: Optional[HarnessConfiguration] = None,
         phase: Literal["train", "eval"] | None = None,
+        group_number: Optional[int] = None,
         rollout_id: Optional[str] = None,
         forwarded_token: Optional[str] = None,
         transport: str = "http",
@@ -1390,6 +1391,9 @@ class RLEOperations:
         :keyword phase: Optional rollout phase, "train" or "eval". Omitted when None so the service
          applies its default.
         :paramtype phase: str or None
+        :keyword group_number: Optional nonnegative, zero-based sampling group index shared by siblings.
+         Stored as rollout metadata, without changing model requests.
+        :paramtype group_number: int or None
         :keyword rollout_id: Caller-supplied identifier, reserved within the project and returned
          unchanged. A bare-hex UUID is generated when omitted.
         :paramtype rollout_id: str or None
@@ -1416,6 +1420,7 @@ class RLEOperations:
             sampling=sampling,
             harness=harness,
             phase=phase,
+            group_number=group_number,
             rollout_id=rollout_id,
         )
         await asyncio.to_thread(validate_rollout_model_renderer, body)

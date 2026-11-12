@@ -38,6 +38,29 @@ def _completion(sequence=1):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("group_number", [None, 0, 17])
+async def test_v4_submits_optional_top_level_group_number(monkeypatch, group_number):
+    socket = _V4Socket()
+    session, _, _ = _queued_session(monkeypatch, [socket], protocol_version="v4")
+    _result_pipeline(
+        session, lambda request: (200, _result(request.url.split("/")[-2]))
+    )
+    async with session:
+        call = _call(session, group_number=group_number)
+        header, payload = await _sent(socket)
+        payload = json.loads(payload)
+        if group_number is None:
+            assert "group_number" not in payload
+        else:
+            assert payload["group_number"] == group_number
+        assert "group_number" not in payload["policy"]
+        socket.incoming.put_nowait(
+            _frame("completed", header["rollout_id"], _completion())
+        )
+        assert (await call).rollout_id == header["rollout_id"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("use_factory", [False, True])
 async def test_default_session_negotiates_v4_and_fetches_full_result(monkeypatch, use_factory):
     socket = _V4Socket()

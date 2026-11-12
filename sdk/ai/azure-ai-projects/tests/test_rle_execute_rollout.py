@@ -185,6 +185,39 @@ def test_posts_to_the_version_pinned_action_url(rollout_server):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("group_number", [None, 0, 17, 2**63 - 1])
+async def test_http_group_number_is_optional_top_level_metadata(
+    rollout_server, asynchronous, group_number
+):
+    recorder, endpoint = rollout_server
+    recorder.body = {"rollout_id": "grouped"}
+    options = dict(
+        task={}, policy=_policy(), rollout_id="grouped", group_number=group_number
+    )
+    if asynchronous:
+        async with AsyncAIProjectClient(
+            endpoint, _AsyncFakeCredential(), allow_preview=True
+        ) as client:
+            await client.rle.execute_rollout("env", "1", enforce_https=False, **options)
+    else:
+        with _client(endpoint) as client:
+            _rollout(client, "env", "1", **options)
+    body = recorder.requests[0]["body"]
+    if group_number is None:
+        assert "group_number" not in body
+    else:
+        assert body["group_number"] == group_number
+    assert "group_number" not in body["policy"]
+
+
+@pytest.mark.parametrize("group_number", [-1, True, False, 1.5, "1", 2**63])
+def test_invalid_group_number_is_rejected(group_number):
+    with pytest.raises(ValueError, match="group_number"):
+        build_rollout_body(task={}, policy=_policy(), group_number=group_number)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("harness", [
     None,
     HarnessConfiguration(type="gym"),

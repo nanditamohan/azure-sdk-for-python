@@ -292,6 +292,9 @@ class RolloutRequest(_Model):
     :ivar phase: Optional rollout phase, "train" or "eval". When omitted, the service defaults
      new rollouts to "train".
     :vartype phase: str
+    :ivar group_number: Optional zero-based group index within the job/session, phase and sampling
+     step. All sibling rollouts share this nonnegative integer.
+    :vartype group_number: int
     :ivar sampling: How this rollout's completions are sampled and rendered. Optional.
     :vartype sampling: ~azure.ai.projects.rle.SamplingOptions
     :ivar harness: Optional callable target for this rollout only. The environment version's
@@ -309,6 +312,8 @@ class RolloutRequest(_Model):
     """Training-job identifier used for durable rollout correlation."""
     phase: Literal["train", "eval"] | None = rest_field(visibility=_VISIBILITY)
     """Rollout phase, "train" or "eval"; omitted requests use the service's train default."""
+    group_number: Optional[int] = rest_field(visibility=_VISIBILITY)
+    """Zero-based sampling group index; shared by sibling rollouts, not a member ordinal."""
     sampling: Optional[SamplingOptions] = rest_field(visibility=_VISIBILITY)
     """How this rollout's completions are sampled and rendered."""
     harness: Optional[HarnessConfiguration] = rest_field(visibility=_VISIBILITY)
@@ -323,6 +328,7 @@ class RolloutRequest(_Model):
         policy: RolloutPolicy,
         job_id: Optional[str] = None,
         phase: Literal["train", "eval"] | None = None,
+        group_number: Optional[int] = None,
         sampling: Optional[SamplingOptions] = None,
         harness: Optional[HarnessConfiguration] = None,
     ) -> None: ...

@@ -291,6 +291,7 @@ def build_rollout_body(
     rollout_id: Optional[str] = None,
     job_id: Optional[str] = None,
     phase: Literal["train", "eval"] | None = None,
+    group_number: Optional[int] = None,
 ) -> RolloutRequest:
     """Assemble a rollout request, generating an id when the caller did not supply one.
 
@@ -314,6 +315,9 @@ def build_rollout_body(
     :keyword phase: Optional rollout phase, "train" or "eval". Omitted when None so the service
      applies its default.
     :paramtype phase: str or None
+    :keyword group_number: Optional nonnegative, zero-based sampling group index shared by siblings.
+     This is rollout metadata, not a model sampling parameter.
+    :paramtype group_number: int or None
     :return: The assembled request.
     :rtype: ~azure.ai.projects.models.RolloutRequest
     """
@@ -323,6 +327,12 @@ def build_rollout_body(
         raise ValueError("policy is required: a rollout must name where its weights come from")
     if phase is not None and phase not in ("train", "eval"):
         raise ValueError("phase must be 'train', 'eval', or None")
+    if group_number is not None and (
+        isinstance(group_number, bool)
+        or not isinstance(group_number, int)
+        or not 0 <= group_number <= 2**63 - 1
+    ):
+        raise ValueError("group_number must be a nonnegative 64-bit integer or None")
     return RolloutRequest(
         rollout_id=rollout_id or uuid.uuid4().hex,
         task=task,
@@ -331,6 +341,7 @@ def build_rollout_body(
         **({"job_id": job_id} if job_id is not None else {}),
         harness=harness,
         phase=phase,
+        **({"group_number": group_number} if group_number is not None else {}),
     )
 
 
